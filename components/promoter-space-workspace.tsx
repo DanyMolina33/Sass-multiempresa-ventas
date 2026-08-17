@@ -11,7 +11,12 @@ type FollowUpItem = { id: string; scheduledAt: string; type: string; notes: stri
 type FollowUpListItem = FollowUpItem & { status: string };
 type RecentSale = { id: string; customerName: string; productName: string; amount: number | null; saleDate: string; status: string };
 type FeaturedMessage = { id: string; title: string; body: string; type: string; fromName: string; createdAt: string } | null;
-type PromoterData = { user: { name: string; email: string; status: string } | null; employee: Employee; supervisorName: string | null; today: SalesSlice; period: SalesSlice; commissions: { projected: number | null; confirmed: number | null }; goal: Goal; featuredMessage: FeaturedMessage; ranking: Ranking; followUpsToday: FollowUpItem[]; recentSales: RecentSale[] };
+type CommissionSummary = { currentPeriod: { amount: number; periodCode: string; status: "OPEN" | "REVIEWED" } | null; lastPaid: { amount: number; periodCode: string; periodEnd: string } | null };
+type PromoterData = { user: { name: string; email: string; status: string } | null; employee: Employee; supervisorName: string | null; today: SalesSlice; period: SalesSlice; commissions: CommissionSummary; goal: Goal; featuredMessage: FeaturedMessage; ranking: Ranking; followUpsToday: FollowUpItem[]; recentSales: RecentSale[] };
+// Section 6/31C of the 2026-08-17 Final Gate closure: never show "Sin datos" when a real historical commission
+// exists — distinguish the still-open current period (may legitimately be S/0.00) from the most recent period
+// that actually paid/confirmed a real commission, however far back that is. Never summed together.
+function periodLabel(code: string) { const [year, month] = code.split("-"); const names = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]; const index = Number(month) - 1; return index >= 0 && index < 12 ? `${names[index]} ${year}` : code; }
 type CustomerMatch = { id: string; name: string; document: string | null; phone: string };
 export type Meta = { products: Array<{ id: string; name: string }>; commercialPlans: Array<{ id: string; name: string; productId: string }> };
 
@@ -80,7 +85,7 @@ export function PromoterSpaceWorkspace() {
 
       <section className="card">
         <div className="card-head"><div><h2>Mis comisiones</h2></div><Link href="/crm/promoter-commissions">Ver detalle de comisiones →</Link></div>
-        {data.employee?.compensationPlan ? <div className="promoter-commission-list"><div><small>Proyectada</small><strong>{money(data.commissions.projected)}</strong></div><div><small>Confirmada</small><strong>{money(data.commissions.confirmed)}</strong></div></div> : <p className="promoter-empty-note">Sin plan de compensación asignado.</p>}
+        {data.employee?.compensationPlan ? <div className="promoter-commission-list"><div><small>Período actual ({data.commissions.currentPeriod?.periodCode ?? "—"})</small><strong>{data.commissions.currentPeriod ? money(data.commissions.currentPeriod.amount) : "Sin período abierto"}</strong></div><div><small>Última pagada{data.commissions.lastPaid ? ` (${periodLabel(data.commissions.lastPaid.periodCode)})` : ""}</small><strong>{data.commissions.lastPaid ? money(data.commissions.lastPaid.amount) : "Aún ninguna"}</strong></div></div> : <p className="promoter-empty-note">Sin plan de compensación asignado.</p>}
       </section>
     </section>
 
@@ -152,7 +157,10 @@ export function PromoterCommissionsWorkspace() {
   if (loading && !data) return <div className="empty-core">Cargando…</div>;
   if (!data) return <div className="operational-empty"><strong>No pudimos cargar tus comisiones</strong><span>{message}</span></div>;
   return <><section className="page-title crm-title"><div><span className="eyebrow">PROMOTOR</span><h1>Mis comisiones</h1><p>{data.employee?.compensationPlan ? `Plan: ${data.employee.compensationPlan.name}` : "Cálculo de comisiones del período."}</p></div></section>
-    {data.employee?.compensationPlan ? <section className="economic-summary"><article><small>PROYECTADA</small><strong>{money(data.commissions.projected)}</strong><span>Período abierto o en revisión</span></article><article><small>CONFIRMADA</small><strong>{money(data.commissions.confirmed)}</strong><span>Período cerrado o pagado</span></article></section> : <section className="card"><p className="promoter-empty-note" style={{ padding: 20 }}>Sin plan de compensación asignado.</p></section>}
+    {data.employee?.compensationPlan ? <section className="economic-summary">
+      <article><small>PERÍODO ACTUAL{data.commissions.currentPeriod ? ` — ${data.commissions.currentPeriod.periodCode}` : ""}</small><strong>{data.commissions.currentPeriod ? money(data.commissions.currentPeriod.amount) : "Sin período abierto"}</strong><span>Período abierto o en revisión — puede ser S/0.00 si aún no hay ventas elegibles</span></article>
+      <article><small>ÚLTIMA COMISIÓN PAGADA{data.commissions.lastPaid ? ` — ${periodLabel(data.commissions.lastPaid.periodCode)}` : ""}</small><strong>{data.commissions.lastPaid ? money(data.commissions.lastPaid.amount) : "Aún ninguna"}</strong><span>Del período cerrado/pagado más reciente con comisión real, aunque no sea el más reciente cerrado</span></article>
+    </section> : <section className="card"><p className="promoter-empty-note" style={{ padding: 20 }}>Sin plan de compensación asignado.</p></section>}
   </>;
 }
 

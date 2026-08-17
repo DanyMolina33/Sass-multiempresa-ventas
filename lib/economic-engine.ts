@@ -48,7 +48,7 @@ function component(type: EconomicRule["expectedCompanyIncomeType"], value: Prism
   return { amount: base.mul(value).div(100), review: false };
 }
 
-export function calculateSaleEconomics(sale: SaleForEconomics, rules: EconomicRule[]) {
+export function calculateSaleEconomics(sale: SaleForEconomics, rules: EconomicRule[], options: { agentIsSupervisorWithoutSuperior?: boolean } = {}) {
   const resolution = resolveEconomicRule(rules, sale);
   const inputSnapshot = {
     productId: sale.productId,
@@ -67,10 +67,16 @@ export function calculateSaleEconomics(sale: SaleForEconomics, rules: EconomicRu
   const rule = resolution.rule;
   const company = component(rule.expectedCompanyIncomeType, rule.expectedCompanyIncomeValue, sale.saleAmount);
   const promoter = component(rule.promoterCommissionType, rule.promoterCommissionValue, sale.saleAmount);
-  const supervisor = component(rule.supervisorCommissionType, rule.supervisorCommissionValue, sale.saleAmount);
+  // A SUPERVISOR selling personally has no one above them by design — they are never auto-assigned as their own
+  // supervisor (lib/crm-access.ts). Any supervisor-override commission the rule specifies has no legitimate
+  // recipient in that case: NOT_APPLICABLE (treated as null, like an unconfigured component), not a missing
+  // assignment an admin needs to fix. A regular AGENT/Promotor sale with no supervisorId still needs one (decision
+  // #3 of the 2026-08-17 Final Gate closure: "no modificar la comisión de ventas realizadas por sus Promotores").
+  const supervisorNotApplicable = Boolean(options.agentIsSupervisorWithoutSuperior && !sale.supervisorId);
+  const supervisor = supervisorNotApplicable ? { amount: null, review: false } : component(rule.supervisorCommissionType, rule.supervisorCommissionValue, sale.saleAmount);
   const incompleteConfiguration = !rule.expectedCompanyIncomeType || rule.expectedCompanyIncomeValue === null;
   const requiresReview = incompleteConfiguration || company.review || promoter.review || supervisor.review;
-  const pendingAssignment = (promoter.amount !== null && !sale.agentId) || (supervisor.amount !== null && !sale.supervisorId);
+  const pendingAssignment = (promoter.amount !== null && !sale.agentId) || (!supervisorNotApplicable && supervisor.amount !== null && !sale.supervisorId);
   const preliminaryMargin = company.amount === null ? null : company.amount.sub(promoter.amount ?? 0).sub(supervisor.amount ?? 0);
   return {
     economicRuleId: rule.id,
@@ -94,12 +100,13 @@ export function calculateSaleEconomics(sale: SaleForEconomics, rules: EconomicRu
 
 export async function calculateAndSnapshotSale(saleId: string, tenantId: string, options: { recalculate?: boolean } = {}) {
   const prisma = getPrisma();
-  const sale = await prisma.sale.findFirst({ where: { id: saleId, tenantId } });
+  const sale = await prisma.sale.findFirst({ where: { id: saleId, tenantId }, include: { agent: { select: { role: { select: { code: true } } } } } });
   if (!sale) throw new Response("Venta fuera del tenant", { status: 403 });
   const existing = await prisma.saleEconomicCalculation.findFirst({ where: { saleId, tenantId, current: true }, orderBy: { revision: "desc" } });
   if (existing && !options.recalculate) return existing;
   const rules = await prisma.economicRule.findMany({ where: { tenantId, active: true } });
-  const result = calculateSaleEconomics(sale, rules);
+  const agentIsSupervisorWithoutSuperior = sale.agent?.role.code === "SUPERVISOR";
+  const result = calculateSaleEconomics(sale, rules, { agentIsSupervisorWithoutSuperior });
   return prisma.$transaction(async (tx) => {
     const latest = await tx.saleEconomicCalculation.findFirst({ where: { saleId, tenantId }, orderBy: { revision: "desc" }, select: { revision: true } });
     await tx.saleEconomicCalculation.updateMany({ where: { saleId, tenantId, current: true }, data: { current: false } });

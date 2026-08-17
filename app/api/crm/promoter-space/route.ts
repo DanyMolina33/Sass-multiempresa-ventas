@@ -3,6 +3,7 @@ import { getPrisma } from "@/lib/prisma";
 import { requireCrmFeature } from "@/lib/vertical-template";
 import { getSalesMetrics, resolveDateRange } from "@/lib/business-consolidation";
 import { teamRanking } from "@/lib/promoter-ranking";
+import { getCommissionSummary } from "@/lib/payroll-engine";
 
 // Self-service only — every field below is scoped to the authenticated user's own agentId/Employee, never another
 // promoter's. There is no listing capability here; "Mis ventas"/"Mis clientes" reuse the already-scoped /crm/sales
@@ -24,15 +25,7 @@ export async function GET() { try {
     prisma.user.findFirst({ where: { id: context.userId }, select: { name: true, email: true, status: true, supervisor: { select: { name: true } } } }),
   ]);
 
-  let commissionProjected: number | null = null, commissionConfirmed: number | null = null;
-  if (employee) {
-    const [projectedEntry, confirmedEntry] = await Promise.all([
-      prisma.payrollEntry.findFirst({ where: { tenantId: context.tenantId, employeeId: employee.id, current: true, payrollPeriod: { status: { in: ["OPEN", "REVIEWED"] } } }, orderBy: { calculatedAt: "desc" } }),
-      prisma.payrollEntry.findFirst({ where: { tenantId: context.tenantId, employeeId: employee.id, current: true, payrollPeriod: { status: { in: ["CLOSED", "PAID"] } } }, orderBy: { calculatedAt: "desc" } }),
-    ]);
-    commissionProjected = projectedEntry?.commissionAmount ? Number(projectedEntry.commissionAmount) : null;
-    commissionConfirmed = confirmedEntry?.commissionAmount ? Number(confirmedEntry.commissionAmount) : null;
-  }
+  const commissions = employee ? await getCommissionSummary(context.tenantId, employee.id) : { currentPeriod: null, lastPaid: null };
 
   // Real goal engine (CommercialGoal) — only ever shows a target that actually exists for this employee's current
   // period; "achieved" reuses the same aprobadas/activadas count already trusted everywhere else in the app
@@ -79,7 +72,7 @@ export async function GET() { try {
     user: self ? { name: self.name, email: self.email, status: self.status } : null,
     employee, supervisorName: self?.supervisor?.name ?? null,
     today, period,
-    commissions: { projected: commissionProjected, confirmed: commissionConfirmed },
+    commissions,
     goal,
     featuredMessage,
     ranking: { position: ranking.position, total: ranking.total, entries: ranking.entries.slice(0, 5) },

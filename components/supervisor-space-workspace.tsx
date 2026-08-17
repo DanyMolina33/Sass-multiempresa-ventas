@@ -9,9 +9,10 @@ type TeamGoal = { target: number; achieved: number; cumplimiento: number } | nul
 type TeamMember = { id: string; name: string; jobPosition: string | null; store: string | null; salesMonth: number; salesPrevMonth: number; tasaAprobacion: number; trend: "up" | "down" | "flat"; goal: TeamGoal };
 type Alert = { key: string; severity: "info" | "warning" | "critical"; message: string; userId?: string; userName?: string };
 type SupervisorRankingEntry = { id: string; name: string; teamSales: number; ownSales: number; teamSize: number; isSelf: boolean };
+type CommissionSummary = { currentPeriod: { amount: number; periodCode: string; status: "OPEN" | "REVIEWED" } | null; lastPaid: { amount: number; periodCode: string; periodEnd: string } | null };
 type SupervisorData = {
   user: { name: string; email: string; status: string } | null; employee: Employee;
-  today: SalesSlice; period: SalesSlice; team: TeamMember[];
+  today: SalesSlice; period: SalesSlice; commissions: CommissionSummary; team: TeamMember[];
   teamSummary: { activePromoters: number; teamSalesToday: number; teamSalesMonth: number; avgCumplimiento: number | null };
   supervisorRanking: { position: number; total: number; entries: SupervisorRankingEntry[] };
   alerts: Alert[];
@@ -66,6 +67,7 @@ export function SupervisorSpaceWorkspace() {
         <div><small>Mi código</small><strong>{data.employee?.commercialCode ?? "Sin código"}</strong></div>
         <div><small>Mis ventas hoy</small><strong>{data.today.total}</strong></div>
         <div><small>Mis ventas del mes</small><strong>{data.period.total}</strong></div>
+        <div><small>Mi comisión ({data.commissions.currentPeriod?.periodCode ?? "sin período abierto"})</small><strong>{data.commissions.currentPeriod ? money(data.commissions.currentPeriod.amount) : "—"}</strong></div>
       </div>
     </section>
 

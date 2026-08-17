@@ -5,6 +5,7 @@ import { getSalesMetrics, resolveDateRange } from "@/lib/business-consolidation"
 import { getSubordinates, supervisorsRanking } from "@/lib/supervisor-team";
 import { deriveSupervisorAlerts } from "@/lib/supervisor-alerts";
 import { ensureCommercialCode } from "@/lib/commercial-code";
+import { getCommissionSummary } from "@/lib/payroll-engine";
 
 // Single aggregator for "Mi gestión" (Inicio Supervisor), same one-request-instead-of-many pattern already used by
 // the Promoter Portal's /api/crm/promoter-space. "Mi equipo" here always means real subordinates (User.supervisorId
@@ -34,6 +35,7 @@ export async function GET() {
     ]);
 
     const commercialCode = employee ? await ensureCommercialCode(context.tenantId, employee.id, "SUPERVISOR", self?.name ?? "Supervisor") : null;
+    const commissions = employee ? await getCommissionSummary(context.tenantId, employee.id) : { currentPeriod: null, lastPaid: null };
 
     const teamDetail = await Promise.all(team.map(async (member) => {
       const [monthMetrics, prevMonthMetrics] = await Promise.all([
@@ -70,6 +72,7 @@ export async function GET() {
       employee: employee ? { id: employee.id, jobPosition: employee.jobPosition.name, store: employee.store?.name ?? null, commercialCode } : null,
       today: todayOwn,
       period: periodOwn,
+      commissions,
       team: teamDetail,
       teamSummary: { activePromoters: team.length, teamSalesToday, teamSalesMonth, avgCumplimiento },
       supervisorRanking: ranking,

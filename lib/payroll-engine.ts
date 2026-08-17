@@ -1,5 +1,6 @@
-import { Prisma, type CompensationCommissionRule, type CompensationCommissionTier, type CompensationComponent, type PensionRegimeRate } from "@prisma/client";
+import { Prisma, type CompensationComponent, type PensionRegimeRate } from "@prisma/client";
 import { getPrisma } from "@/lib/prisma";
+import { APPROVED_SALE_STATUSES } from "@/lib/business-consolidation";
 
 const ZERO = new Prisma.Decimal(0);
 type SalesBase = "SALE_AMOUNT" | "RECOGNIZED_AMOUNT" | "EXPECTED_COMPANY_INCOME";
@@ -19,33 +20,35 @@ function resolveBaseAfterGross(base: string | null, baseSalary: Prisma.Decimal |
   return resolveBaseBeforeGross(base, baseSalary, salesBaseTotals);
 }
 
-function tierFor(tiers: CompensationCommissionTier[], eligibleCount: number) {
-  return tiers.find((tier) => eligibleCount >= tier.minSales && (tier.maxSales === null || eligibleCount <= tier.maxSales)) ?? null;
-}
+// Final Gate closure (2026-08-17), decision #1/#4: CompensationCommissionRule/Tier are retired as a commission
+// SOURCE — confirmed empty tenant-wide, and the historical PAID PayrollEntry.commissionAmount values (mayo/junio/
+// julio 2026) were proven (exact match, aggregate AND per-sale) to trace back to the SAME EconomicRule percentages
+// that already drive SaleEconomicCalculation, via the orphaned Settlement/CommissionEarned ledger — never through
+// this rule-based path. SaleEconomicCalculation.promoterCommission/supervisorCommission is now the single official
+// source Payroll consolidates from; this file no longer computes a second, independent commission figure.
+// CompensationCommissionRule/CompensationCommissionTier stay in the schema (still editable via the Compensation
+// Plans admin UI) but have no effect on payroll math anymore — see FINAL_GATE_AUDIT.md.
+export type EconomicCommissionLine = { saleId: string; role: "PROMOTER" | "SUPERVISOR"; amount: string };
 
-export function calculateCommission(rule: (CompensationCommissionRule & { tiers: CompensationCommissionTier[] }) | null, eligibleCount: number, baseSalary: Prisma.Decimal | null, salesBaseTotals: SalesBaseTotals) {
-  if (!rule || !rule.active) return { amount: null as Prisma.Decimal | null, detail: { configured: false } };
-  if (rule.calculationType === "FIXED_PER_SALE") {
-    if (rule.fixedAmountPerSale === null) return { amount: null, detail: { configured: false, reason: "monto fijo sin configurar" } };
-    return { amount: rule.fixedAmountPerSale.mul(eligibleCount), detail: { calculationType: "FIXED_PER_SALE", eligibleCount, fixedAmountPerSale: rule.fixedAmountPerSale.toString() } };
-  }
-  if (rule.calculationType === "PERCENTAGE") {
-    if (rule.percentageValue === null || !rule.percentageBase) return { amount: null, detail: { configured: false, reason: "porcentaje sin base" } };
-    const base = resolveBaseBeforeGross(rule.percentageBase, baseSalary, salesBaseTotals);
-    if (base === null) return { amount: null, detail: { configured: false, reason: `base ${rule.percentageBase} no disponible` } };
-    return { amount: base.mul(rule.percentageValue).div(100), detail: { calculationType: "PERCENTAGE", percentageBase: rule.percentageBase, baseValue: base.toString(), percentageValue: rule.percentageValue.toString() } };
-  }
-  // TIERED_BY_SALE_COUNT
-  const tier = tierFor(rule.tiers, eligibleCount);
-  if (!tier) return { amount: null, detail: { configured: false, reason: `sin tramo configurado para ${eligibleCount} ventas` } };
-  if (tier.tierCalculationType === "FIXED_PER_SALE") {
-    if (tier.fixedAmountPerSale === null) return { amount: null, detail: { configured: false, reason: "tramo sin monto fijo" } };
-    return { amount: tier.fixedAmountPerSale.mul(eligibleCount), detail: { calculationType: "TIERED_BY_SALE_COUNT", tier: { minSales: tier.minSales, maxSales: tier.maxSales }, fixedAmountPerSale: tier.fixedAmountPerSale.toString(), eligibleCount } };
-  }
-  if (tier.percentageValue === null || !tier.percentageBase) return { amount: null, detail: { configured: false, reason: "tramo sin base porcentual" } };
-  const base = resolveBaseBeforeGross(tier.percentageBase, baseSalary, salesBaseTotals);
-  if (base === null) return { amount: null, detail: { configured: false, reason: `base ${tier.percentageBase} no disponible` } };
-  return { amount: base.mul(tier.percentageValue).div(100), detail: { calculationType: "TIERED_BY_SALE_COUNT", tier: { minSales: tier.minSales, maxSales: tier.maxSales }, percentageBase: tier.percentageBase, baseValue: base.toString(), percentageValue: tier.percentageValue.toString() } };
+export async function deriveEconomicCommission(tenantId: string, userId: string | null, periodStart: Date, periodEnd: Date): Promise<{ amount: Prisma.Decimal | null; breakdown: EconomicCommissionLine[] }> {
+  if (!userId) return { amount: null, breakdown: [] };
+  const prisma = getPrisma();
+  const [ownSales, supervisedSales] = await Promise.all([
+    prisma.sale.findMany({
+      where: { tenantId, agentId: userId, saleDate: { gte: periodStart, lt: periodEnd }, status: { in: [...APPROVED_SALE_STATUSES] } },
+      select: { id: true, economicCalculations: { where: { current: true }, select: { promoterCommission: true }, take: 1 } },
+    }),
+    prisma.sale.findMany({
+      where: { tenantId, supervisorId: userId, saleDate: { gte: periodStart, lt: periodEnd }, status: { in: [...APPROVED_SALE_STATUSES] } },
+      select: { id: true, economicCalculations: { where: { current: true }, select: { supervisorCommission: true }, take: 1 } },
+    }),
+  ]);
+  const breakdown: EconomicCommissionLine[] = [
+    ...ownSales.flatMap((sale) => { const amount = sale.economicCalculations[0]?.promoterCommission; return amount != null ? [{ saleId: sale.id, role: "PROMOTER" as const, amount: amount.toString() }] : []; }),
+    ...supervisedSales.flatMap((sale) => { const amount = sale.economicCalculations[0]?.supervisorCommission; return amount != null ? [{ saleId: sale.id, role: "SUPERVISOR" as const, amount: amount.toString() }] : []; }),
+  ];
+  if (!breakdown.length) return { amount: null, breakdown };
+  return { amount: breakdown.reduce((total, line) => total.add(line.amount), new Prisma.Decimal(0)), breakdown };
 }
 
 function resolveComponent(component: CompensationComponent, resolveBase: (base: string | null) => Prisma.Decimal | null) {
@@ -64,7 +67,7 @@ export type PayrollCalcInput = {
   employmentType: "EN_PLANILLA" | "FUERA_PLANILLA";
   baseSalary: Prisma.Decimal | null;
   components: CompensationComponent[];
-  commissionRule: (CompensationCommissionRule & { tiers: CompensationCommissionTier[] }) | null;
+  commission: { amount: Prisma.Decimal | null; breakdown: EconomicCommissionLine[] };
   pensionRegimeRate: PensionRegimeRate | null;
   eligibleSalesCount: number;
   salesBaseTotals: SalesBaseTotals;
@@ -73,7 +76,7 @@ export type PayrollCalcInput = {
 export function calculateEmployeePayroll(input: PayrollCalcInput) {
   const beforeGross = (base: string | null) => resolveBaseBeforeGross(base, input.baseSalary, input.salesBaseTotals);
 
-  const commission = calculateCommission(input.commissionRule, input.eligibleSalesCount, input.baseSalary, input.salesBaseTotals);
+  const commission = input.commission;
 
   const activeIncome = input.components.filter((c) => c.role === "INCOME" && c.active);
   const incomeBreakdown = activeIncome.map((component) => ({ id: component.id, name: component.name, category: component.category, amount: resolveComponent(component, beforeGross) }));
@@ -123,7 +126,7 @@ export function calculateEmployeePayroll(input: PayrollCalcInput) {
       employmentType: input.employmentType,
       eligibleSalesCount: input.eligibleSalesCount,
       salesBaseTotals: { SALE_AMOUNT: input.salesBaseTotals.SALE_AMOUNT.toString(), RECOGNIZED_AMOUNT: input.salesBaseTotals.RECOGNIZED_AMOUNT.toString(), EXPECTED_COMPANY_INCOME: input.salesBaseTotals.EXPECTED_COMPANY_INCOME.toString() },
-      commission: commission.detail,
+      commission: { amount: commission.amount?.toString() ?? null, breakdown: commission.breakdown },
       income: incomeBreakdown.map((c) => ({ ...c, amount: c.amount?.toString() ?? null })),
       pension: pensionDetail,
       deductions: deductionBreakdown.map((c) => ({ ...c, amount: c.amount?.toString() ?? null })),
@@ -143,18 +146,18 @@ function sumOrNullIfNoneConfigured(entries: Array<{ amount: Prisma.Decimal | nul
 
 const RECOGNIZED_STATUSES = ["CONFORME", "DIFERENCIA"] as const;
 
-export async function computeEligibleSalesForEmployee(tenantId: string, userId: string | null, roleCode: string | undefined, eligibility: "SALE_APPROVED" | "SALE_RECOGNIZED", periodStart: Date, periodEnd: Date) {
+// "Eligible" here means SALE_APPROVED only (decision #1/#4) — reuses the canonical APPROVED_SALE_STATUSES
+// definition instead of an independent literal. This feeds eligibleSalesCount/salesBaseTotals, which other
+// (non-commission) components on a plan may still reference as a percentage base — commission itself now comes
+// from deriveEconomicCommission, not from these totals.
+export async function computeEligibleSalesForEmployee(tenantId: string, userId: string | null, roleCode: string | undefined, periodStart: Date, periodEnd: Date) {
   if (!userId) return { count: 0, salesBaseTotals: { SALE_AMOUNT: new Prisma.Decimal(0), RECOGNIZED_AMOUNT: new Prisma.Decimal(0), EXPECTED_COMPANY_INCOME: new Prisma.Decimal(0) } satisfies SalesBaseTotals };
   const prisma = getPrisma();
   const scopeField = roleCode === "SUPERVISOR" ? "supervisorId" : roleCode === "AGENT" ? "agentId" : null;
   if (!scopeField) return { count: 0, salesBaseTotals: { SALE_AMOUNT: new Prisma.Decimal(0), RECOGNIZED_AMOUNT: new Prisma.Decimal(0), EXPECTED_COMPANY_INCOME: new Prisma.Decimal(0) } satisfies SalesBaseTotals };
 
-  const eligibilityWhere: Prisma.SaleWhereInput = eligibility === "SALE_APPROVED"
-    ? { status: { in: ["APROBADA", "ACTIVADA"] } }
-    : { reconciliationResults: { some: { status: { in: [...RECOGNIZED_STATUSES] }, recognizedAmount: { not: null } } } };
-
   const sales = await prisma.sale.findMany({
-    where: { tenantId, [scopeField]: userId, saleDate: { gte: periodStart, lt: periodEnd }, ...eligibilityWhere },
+    where: { tenantId, [scopeField]: userId, saleDate: { gte: periodStart, lt: periodEnd }, status: { in: [...APPROVED_SALE_STATUSES] } },
     select: { id: true, saleAmount: true, economicCalculations: { where: { current: true }, select: { expectedCompanyIncome: true }, take: 1 }, reconciliationResults: { where: { status: { in: [...RECOGNIZED_STATUSES] } }, select: { recognizedAmount: true } } },
   });
 
@@ -169,16 +172,18 @@ export async function calculateAndSnapshotPayrollEntry(tenantId: string, payroll
   const prisma = getPrisma();
   const period = await prisma.payrollPeriod.findFirstOrThrow({ where: { id: payrollPeriodId, tenantId } });
   if (period.status === "CLOSED" || period.status === "PAID") throw new Response("El período ya está cerrado; no admite recálculo", { status: 409 });
-  const employee = await prisma.employee.findFirstOrThrow({ where: { id: employeeId, tenantId }, include: { user: { include: { role: true } }, pensionRegimeRate: true, compensationPlan: { include: { components: true, commissionRule: { include: { tiers: true } } } } } });
+  const employee = await prisma.employee.findFirstOrThrow({ where: { id: employeeId, tenantId }, include: { user: { include: { role: true } }, pensionRegimeRate: true, compensationPlan: { include: { components: true } } } });
 
-  const eligibility = employee.compensationPlan.commissionRule?.eligibility ?? "SALE_APPROVED";
-  const { count, salesBaseTotals } = await computeEligibleSalesForEmployee(tenantId, employee.userId, employee.user?.role.code, eligibility, period.periodStart, period.periodEnd);
+  const [{ count, salesBaseTotals }, commission] = await Promise.all([
+    computeEligibleSalesForEmployee(tenantId, employee.userId, employee.user?.role.code, period.periodStart, period.periodEnd),
+    deriveEconomicCommission(tenantId, employee.userId, period.periodStart, period.periodEnd),
+  ]);
 
   const result = calculateEmployeePayroll({
     employmentType: employee.employmentType,
     baseSalary: employee.compensationPlan.baseSalary,
     components: employee.compensationPlan.components,
-    commissionRule: employee.compensationPlan.commissionRule,
+    commission,
     pensionRegimeRate: employee.pensionRegimeRate,
     eligibleSalesCount: count,
     salesBaseTotals,
@@ -208,4 +213,43 @@ export async function recalculatePayrollPeriod(tenantId: string, payrollPeriodId
   const entries = [];
   for (const employee of employees) entries.push(await calculateAndSnapshotPayrollEntry(tenantId, payrollPeriodId, employee.id));
   return entries;
+}
+
+export type CommissionSummary = {
+  currentPeriod: { amount: number; periodCode: string; status: "OPEN" | "REVIEWED" } | null;
+  lastPaid: { amount: number; periodCode: string; periodEnd: string } | null;
+};
+
+// Final Gate closure (2026-08-17), decision #6/31C: the Portal previously took only the single most recent
+// CLOSED/PAID PayrollEntry, so a period with a real historical commission (e.g. mayo, S/133.37) went invisible
+// the moment a LATER period closed with no commission (e.g. julio, null) — "Sin datos" despite real paid money.
+// Now returns both concepts separately: the still-open current period (may legitimately be 0) and the most
+// recent period that actually had a real paid/confirmed commission, however far back that is. Never summed —
+// each widget shows one period at a time, per the approved UX decision.
+export async function getCommissionSummary(tenantId: string, employeeId: string): Promise<CommissionSummary> {
+  const prisma = getPrisma();
+  const [currentEntry, lastPaidEntry] = await Promise.all([
+    prisma.payrollEntry.findFirst({ where: { tenantId, employeeId, current: true, payrollPeriod: { status: { in: ["OPEN", "REVIEWED"] } } }, orderBy: { payrollPeriod: { periodStart: "desc" } }, include: { payrollPeriod: { select: { code: true, status: true } } } }),
+    prisma.payrollEntry.findFirst({ where: { tenantId, employeeId, current: true, commissionAmount: { not: null }, payrollPeriod: { status: { in: ["CLOSED", "PAID"] } } }, orderBy: { payrollPeriod: { periodStart: "desc" } }, include: { payrollPeriod: { select: { code: true, periodEnd: true } } } }),
+  ]);
+  return {
+    currentPeriod: currentEntry ? { amount: Number(currentEntry.commissionAmount ?? 0), periodCode: currentEntry.payrollPeriod.code, status: currentEntry.payrollPeriod.status as "OPEN" | "REVIEWED" } : null,
+    lastPaid: lastPaidEntry ? { amount: Number(lastPaidEntry.commissionAmount), periodCode: lastPaidEntry.payrollPeriod.code, periodEnd: lastPaidEntry.payrollPeriod.periodEnd.toISOString() } : null,
+  };
+}
+
+export type EconomicGap = { saleId: string; productName: string; planName: string | null; transactionType: string; calculationStatus: string };
+
+// Decision #4 (Final Gate closure, 2026-08-17): with CompensationCommissionRule retired as a commission source,
+// "falta una regla aplicable" now means the ECONOMIC engine itself couldn't resolve a sale (PENDING_RULE = no
+// EconomicRule matched at all; REQUIRES_REVIEW = matched but ambiguous/incompletely configured) — never a silent
+// fallback to 0. Only approved-status sales are checked (only those are ever eligible for commission in the first
+// place; a REGISTRADA/RECHAZADA sale with no rule isn't a payroll gap).
+export async function findUnresolvedEconomicGaps(tenantId: string, periodStart: Date, periodEnd: Date): Promise<EconomicGap[]> {
+  const prisma = getPrisma();
+  const sales = await prisma.sale.findMany({
+    where: { tenantId, saleDate: { gte: periodStart, lt: periodEnd }, status: { in: [...APPROVED_SALE_STATUSES] }, economicCalculations: { some: { current: true, calculationStatus: { in: ["PENDING_RULE", "REQUIRES_REVIEW"] } } } },
+    select: { id: true, productNameSnapshot: true, planNameSnapshot: true, transactionType: true, economicCalculations: { where: { current: true }, select: { calculationStatus: true }, take: 1 } },
+  });
+  return sales.map((sale) => ({ saleId: sale.id, productName: sale.productNameSnapshot, planName: sale.planNameSnapshot, transactionType: sale.transactionType, calculationStatus: sale.economicCalculations[0]?.calculationStatus ?? "PENDING_RULE" }));
 }

@@ -3,7 +3,7 @@ import { crmError, requireCrmContext } from "@/lib/crm-access";
 import { getPrisma } from "@/lib/prisma";
 import { requireCrmFeature } from "@/lib/vertical-template";
 import { requirePersonnelWrite } from "@/lib/payroll-access";
-import { recalculatePayrollPeriod } from "@/lib/payroll-engine";
+import { findUnresolvedEconomicGaps, recalculatePayrollPeriod } from "@/lib/payroll-engine";
 
 const ACTIONS = ["recalculate", "review", "close", "pay"] as const;
 
@@ -28,6 +28,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   }
   if (action === "close") {
     if (period.status === "CLOSED" || period.status === "PAID") throw new Response("El período ya está cerrado", { status: 409 });
+    // Decision #4: never close a period silently when the economic engine couldn't resolve a real commission for
+    // an approved sale in range — no invented percentage, no silent monetary fallback to 0.
+    const gaps = await findUnresolvedEconomicGaps(context.tenantId, period.periodStart, period.periodEnd);
+    if (gaps.length) throw new Response(`No se puede cerrar: ${gaps.length} venta(s) aprobada(s) del período no tienen una regla económica resuelta (${gaps.slice(0, 5).map((g) => `${g.productName}${g.planName ? ` / ${g.planName}` : ""} (${g.transactionType}): ${g.calculationStatus}`).join("; ")}${gaps.length > 5 ? "…" : ""}). Configura o corrige la regla correspondiente antes de cerrar.`, { status: 409 });
     const item = await prisma.payrollPeriod.update({ where: { id }, data: { status: "CLOSED", closedAt: new Date() } });
     return Response.json({ item });
   }

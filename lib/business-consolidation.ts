@@ -24,6 +24,11 @@ const RECOGNIZED_STATUSES = ["CONFORME", "DIFERENCIA"] as const;
 
 export type SalesFilter = { productId?: string; commercialPlanId?: string; transactionType?: string; agentId?: string; supervisorId?: string; storeId?: string };
 
+// Single canonical definition of "aprobada" for the whole app (goals, ranking, dashboard, payroll eligibility).
+// Previously duplicated as an independent literal in lib/payroll-engine.ts — now imported from here instead, so a
+// future change to this business rule can't silently drift between the two.
+export const APPROVED_SALE_STATUSES = ["APROBADA", "ACTIVADA"] as const;
+
 export async function getSalesMetrics(tenantId: string, range: DateRange | null, filters: SalesFilter = {}) {
   const prisma = getPrisma();
   const where: Prisma.SaleWhereInput = { tenantId, ...(range ? { saleDate: range } : {}), ...(filters.productId ? { productId: filters.productId } : {}), ...(filters.commercialPlanId ? { commercialPlanId: filters.commercialPlanId } : {}), ...(filters.transactionType ? { transactionType: filters.transactionType as never } : {}), ...(filters.agentId ? { agentId: filters.agentId } : {}), ...(filters.supervisorId ? { supervisorId: filters.supervisorId } : {}), ...(filters.storeId ? { storeId: filters.storeId } : {}) };
@@ -57,24 +62,52 @@ export async function getCustomerMetrics(tenantId: string, range: DateRange | nu
   return { total, nuevosEnPeriodo };
 }
 
+// Final Gate closure (2026-08-17), decision #2: Settlement/SettlementDetail is a real, pre-existing historical
+// liquidación ledger, produced outside this app's live Reconciliation workflow (see FINAL_GATE_AUDIT.md — proven
+// empirically that SettlementDetail.comisionEsperada/comisionClaro are the exact same economic quantity as
+// SaleEconomicCalculation.expectedCompanyIncome / ReconciliationResult.recognizedAmount, just tracked through an
+// older pipeline). A sale's recognized income is counted from AT MOST ONE source, ever: a live ReconciliationResult
+// (if one exists for that sale) always wins over the historical Settlement snapshot — this is what makes it safe
+// for the live upload workflow to eventually re-process any of these same sales without double counting. Nothing
+// here writes to Settlement/SettlementDetail or ReconciliationResult; it is a pure, additive read-side merge.
+async function getSettlementLedgerContribution(tenantId: string, range: DateRange | null, excludeSaleIds: Set<string>) {
+  const prisma = getPrisma();
+  const settlements = range ? await prisma.settlement.findMany({ where: { tenantId, settlementDate: range }, select: { id: true } }) : await prisma.settlement.findMany({ where: { tenantId }, select: { id: true } });
+  if (!settlements.length) return { count: 0, expected: new Prisma.Decimal(0), recognized: new Prisma.Decimal(0), difference: new Prisma.Decimal(0) };
+  const details = await prisma.settlementDetail.findMany({
+    where: { tenantId, settlementId: { in: settlements.map((s) => s.id) }, estado: "RECONOCIDA", saleId: { not: null } },
+  });
+  const eligible = details.filter((d) => d.saleId && !excludeSaleIds.has(d.saleId));
+  const expected = eligible.reduce((total, d) => d.comisionEsperada ? total.add(d.comisionEsperada) : total, new Prisma.Decimal(0));
+  const recognized = eligible.reduce((total, d) => d.comisionClaro ? total.add(d.comisionClaro) : total, new Prisma.Decimal(0));
+  return { count: eligible.length, expected, recognized, difference: recognized.sub(expected) };
+}
+
 export async function getLiquidacionesMetrics(tenantId: string, range: DateRange | null) {
   const prisma = getPrisma();
   const where: Prisma.ReconciliationResultWhereInput = { tenantId, ...(range ? { reconciliation: { settlementDate: range } } : {}) };
-  const [counts, sums] = await Promise.all([
+  const [counts, sums, liveSaleIds] = await Promise.all([
     prisma.reconciliationResult.groupBy({ by: ["status"], where, _count: { _all: true } }),
     prisma.reconciliationResult.aggregate({ where, _sum: { expectedAmount: true, recognizedAmount: true, differenceAmount: true } }),
+    // Only a MEANINGFULLY recognized live result (CONFORME/DIFERENCIA) supersedes the historical ledger for a sale
+    // — a NO_LIQUIDADO/PENDIENTE/REQUIERE_REVISION result (e.g. a synthetic "not found" row created as a side
+    // effect of importing an unrelated file for the same period) must never erase a real historical recognition
+    // that already exists in Settlement. Confirmed live 2026-08-17: without this filter, uploading an unrelated
+    // 1-row file for period 2026-05 silently zeroed out ~29 other real, already-recognized sales.
+    prisma.reconciliationResult.findMany({ where: { tenantId, saleId: { not: null }, status: { in: [...RECOGNIZED_STATUSES] } }, select: { saleId: true } }),
   ]);
   const byStatus = Object.fromEntries(counts.map((row) => [row.status, row._count._all])) as Record<string, number>;
+  const ledger = await getSettlementLedgerContribution(tenantId, range, new Set(liveSaleIds.map((r) => r.saleId!)));
   return {
-    reconocidas: (byStatus.CONFORME ?? 0) + (byStatus.DIFERENCIA ?? 0),
-    conformes: byStatus.CONFORME ?? 0,
+    reconocidas: (byStatus.CONFORME ?? 0) + (byStatus.DIFERENCIA ?? 0) + ledger.count,
+    conformes: (byStatus.CONFORME ?? 0) + ledger.count,
     conDiferencia: byStatus.DIFERENCIA ?? 0,
     noLiquidadas: byStatus.NO_LIQUIDADO ?? 0,
     pendientes: byStatus.PENDIENTE ?? 0,
     enRevision: byStatus.REQUIERE_REVISION ?? 0,
-    ingresoEsperado: Number(sums._sum.expectedAmount ?? 0),
-    ingresoReconocido: Number(sums._sum.recognizedAmount ?? 0),
-    diferenciaTotal: Number(sums._sum.differenceAmount ?? 0),
+    ingresoEsperado: Number(sums._sum.expectedAmount ?? 0) + Number(ledger.expected),
+    ingresoReconocido: Number(sums._sum.recognizedAmount ?? 0) + Number(ledger.recognized),
+    diferenciaTotal: Number(sums._sum.differenceAmount ?? 0) + Number(ledger.difference),
   };
 }
 
@@ -82,7 +115,7 @@ export async function getFinanceConsolidation(tenantId: string, range: DateRange
   const prisma = getPrisma();
   const recognizedWhere: Prisma.ReconciliationResultWhereInput = { tenantId, status: { in: [...RECOGNIZED_STATUSES] }, ...(range ? { reconciliation: { settlementDate: range } } : {}) };
   const financeBaseWhere: Prisma.FinanceEntryWhereInput = { tenantId, ...(range ? { entryDate: range } : {}) };
-  const [recognizedSum, otherIncomeSum, operatingExpenseSum, personnelCostRealSum, expectedIncomeAgg] = await Promise.all([
+  const [recognizedSum, otherIncomeSum, operatingExpenseSum, personnelCostRealSum, expectedIncomeAgg, liveSaleIds] = await Promise.all([
     prisma.reconciliationResult.aggregate({ where: recognizedWhere, _sum: { recognizedAmount: true } }),
     prisma.financeEntry.aggregate({ where: { ...financeBaseWhere, type: "INGRESO" }, _sum: { amount: true } }),
     // Operating vs personnel expenses are partitioned by payrollPeriodId — set only on the one consolidated entry
@@ -93,8 +126,12 @@ export async function getFinanceConsolidation(tenantId: string, range: DateRange
     // PayrollPeriod's own periodStart/periodEnd, the real business date for "cost incurred for work done then".
     prisma.financeEntry.aggregate({ where: { tenantId, type: "GASTO", payrollPeriodId: { not: null }, ...(range ? { payrollPeriod: { periodStart: { lt: range.lt }, periodEnd: { gte: range.gte } } } : {}) }, _sum: { amount: true } }),
     prisma.saleEconomicCalculation.aggregate({ where: { tenantId, current: true, ...(range ? { sale: { saleDate: range } } : {}) }, _sum: { expectedCompanyIncome: true } }),
+    // Only a MEANINGFULLY recognized live result supersedes the historical ledger — see the identical note in
+    // getLiquidacionesMetrics above (same real bug, same fix, kept in sync deliberately).
+    prisma.reconciliationResult.findMany({ where: { tenantId, saleId: { not: null }, status: { in: [...RECOGNIZED_STATUSES] } }, select: { saleId: true } }),
   ]);
-  const recognizedIncome = Number(recognizedSum._sum.recognizedAmount ?? 0);
+  const settlementLedger = await getSettlementLedgerContribution(tenantId, range, new Set(liveSaleIds.map((r) => r.saleId!)));
+  const recognizedIncome = Number(recognizedSum._sum.recognizedAmount ?? 0) + Number(settlementLedger.recognized);
   const otherIncome = Number(otherIncomeSum._sum.amount ?? 0);
   const operatingExpenses = Number(operatingExpenseSum._sum.amount ?? 0);
   const personnelCostReal = Number(personnelCostRealSum._sum.amount ?? 0);
