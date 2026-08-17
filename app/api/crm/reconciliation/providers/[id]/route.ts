@@ -1,0 +1,6 @@
+import { crmError, requireCrmContext } from "@/lib/crm-access";
+import { getPrisma } from "@/lib/prisma";
+import { requireReconciliationWrite } from "@/lib/reconciliation-access";
+import { requireCrmFeature } from "@/lib/vertical-template";
+
+export async function PATCH(request:Request,{params}:{params:Promise<{id:string}>}){try{const context=await requireCrmContext();await requireCrmFeature(context.tenantId,"reconciliation");requireReconciliationWrite(context.role);const{id}=await params,body=await request.json(),current=await getPrisma().settlementProvider.findFirst({where:{id,tenantId:context.tenantId}});if(!current)throw new Response("Empresa proveedora fuera del tenant",{status:403});const name=body.name===undefined?undefined:String(body.name).trim(),legalName=body.legalName===undefined?undefined:String(body.legalName).trim()||null,code=body.code===undefined?undefined:String(body.code).trim().toUpperCase();if(name!==undefined&&!name)throw new Response("Nombre comercial obligatorio",{status:400});return Response.json({item:await getPrisma().settlementProvider.update({where:{id},data:{name,legalName,code:code||undefined,active:body.active===undefined?undefined:Boolean(body.active)}})})}catch(error){return crmError(error)}}

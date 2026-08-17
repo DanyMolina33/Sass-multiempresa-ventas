@@ -1,0 +1,4 @@
+import { NextResponse } from "next/server";
+import { isSuperAdmin, requireSession } from "@/lib/auth";
+import { getPrisma } from "@/lib/prisma";
+export async function GET(){try{const session=await requireSession();if(!isSuperAdmin(session))throw new Response("Solo SUPER_ADMIN puede consultar opciones de provisionamiento",{status:403});const[plans,modules,templates]=await Promise.all([getPrisma().plan.findMany({where:{status:"ACTIVE"},orderBy:{name:"asc"}}),getPrisma().module.findMany({where:{status:"ACTIVE"},orderBy:{name:"asc"}}),getPrisma().verticalTemplate.findMany({where:{active:true},include:{features:{orderBy:{name:"asc"}}},orderBy:{name:"asc"}})]);return NextResponse.json({plans,modules,templates})}catch(error){if(error instanceof Response)return NextResponse.json({message:(await error.text())||"Acceso denegado"},{status:error.status});return NextResponse.json({message:"No se pudieron cargar las opciones."},{status:400})}}

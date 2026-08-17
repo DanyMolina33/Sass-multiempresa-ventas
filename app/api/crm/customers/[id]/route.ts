@@ -1,0 +1,7 @@
+import { crmError, requireCrmContext, validateAssignableUser } from "@/lib/crm-access";
+import { getOperationalCustomer } from "@/lib/crm-operational-query";
+import { requireCrmFeature } from "@/lib/vertical-template";
+import { getPrisma } from "@/lib/prisma";
+
+export async function GET(_request:Request,{params}:{params:Promise<{id:string}>}){try{const context=await requireCrmContext();await requireCrmFeature(context.tenantId,"customers");const{id}=await params,item=await getOperationalCustomer(context.tenantId,id,context.teamUserIds);if(!item)throw new Response("Cliente fuera de alcance",{status:403});return Response.json({item})}catch(error){return crmError(error)}}
+export async function PATCH(request:Request,{params}:{params:Promise<{id:string}>}){try{const context=await requireCrmContext();await requireCrmFeature(context.tenantId,"customers");const{id}=await params,prisma=getPrisma(),current=await prisma.customer.findFirst({where:{id,tenantId:context.tenantId,...(context.teamUserIds?{ownerUserId:{in:context.teamUserIds}}:{})}});if(!current)throw new Response("Cliente fuera de alcance",{status:403});const body=await request.json();let ownerUserId=body.ownerUserId;if(context.role==="AGENT")ownerUserId=context.userId;if(ownerUserId)await validateAssignableUser(context,ownerUserId);const item=await prisma.customer.update({where:{id},data:{name:body.name,document:body.document,phone:body.phone,email:body.email,city:body.city,address:body.address,status:body.status,ownerUserId}});return Response.json({item})}catch(error){return crmError(error)}}

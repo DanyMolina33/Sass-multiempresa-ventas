@@ -1,0 +1,7 @@
+import { crmError, requireCrmContext, validateAssignableUser } from "@/lib/crm-access";
+import { listOperationalCustomers } from "@/lib/crm-operational-query";
+import { getPrisma } from "@/lib/prisma";
+import { requireCrmFeature } from "@/lib/vertical-template";
+
+export async function GET(request:Request){try{const context=await requireCrmContext();await requireCrmFeature(context.tenantId,"customers");const search=new URL(request.url).searchParams;return Response.json(await listOperationalCustomers(context.tenantId,{page:Number(search.get("page")||1),pageSize:Number(search.get("pageSize")||25),search:search.get("search")||undefined},context.teamUserIds))}catch(error){return crmError(error)}}
+export async function POST(request:Request){try{const context=await requireCrmContext();await requireCrmFeature(context.tenantId,"customers");const body=await request.json();const ownerId=context.role==="AGENT"?context.userId:body.ownerUserId;if(ownerId)await validateAssignableUser(context,ownerId);const item=await getPrisma().customer.create({data:{tenantId:context.tenantId,name:body.name,document:body.document||null,phone:body.phone,email:body.email||null,city:body.city||null,address:body.address||null,ownerUserId:ownerId||null}});return Response.json({item},{status:201})}catch(error){return crmError(error)}}

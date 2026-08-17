@@ -1,0 +1,2 @@
+export function requirePersonnelRead(role: string) { if (!["SUPER_ADMIN", "COMPANY_ADMIN", "SUPERVISOR"].includes(role)) throw new Response("No tienes acceso a Pago de Personal", { status: 403 }); }
+export function requirePersonnelWrite(role: string) { if (!["SUPER_ADMIN", "COMPANY_ADMIN"].includes(role)) throw new Response("Solo administración puede gestionar personal y compensaciones", { status: 403 }); }

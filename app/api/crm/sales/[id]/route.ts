@@ -1,0 +1,15 @@
+import { assignedScope, crmError, requireCrmContext, validateAssignableUser } from "@/lib/crm-access";
+import { getPrisma } from "@/lib/prisma";
+import { requireCrmFeature } from "@/lib/vertical-template";
+import { getOperationalSale } from "@/lib/crm-operational-query";
+
+const pipelineByStatus:Record<string,string>={EN_VALIDACION:"EN_VALIDACION",APROBADA:"APROBADA",ACTIVADA:"ACTIVADA",RECHAZADA:"RECHAZADA",CANCELADA:"CANCELADA"};
+const dateByStatus:Record<string,"validationDate"|"approvalDate"|"activationDate"|"cancellationDate">={EN_VALIDACION:"validationDate",APROBADA:"approvalDate",ACTIVADA:"activationDate",CANCELADA:"cancellationDate"};
+export async function GET(_request:Request,{params}:{params:Promise<{id:string}>}){try{const context=await requireCrmContext();await requireCrmFeature(context.tenantId,"sales");const {id}=await params;const item=await getOperationalSale(context.tenantId,id,context.teamUserIds,context.storeId);if(!item)throw new Response("Venta fuera de alcance",{status:403});return Response.json({item})}catch(error){return crmError(error)}}
+
+export async function PATCH(request:Request,{params}:{params:Promise<{id:string}>}){
+  try{const context=await requireCrmContext();await requireCrmFeature(context.tenantId,"sales");const {id}=await params;const body=await request.json();const prisma=getPrisma();const current=await prisma.sale.findFirst({where:{id,tenantId:context.tenantId,...assignedScope(context,"agentId")}});if(!current)throw new Response("Venta fuera de alcance",{status:403});
+    let agentId:string|undefined;let supervisorId:string|null|undefined;if(body.agentId&&body.agentId!==current.agentId){if(context.role==="AGENT")throw new Response("AGENT no puede reasignar ventas",{status:403});const agent=await validateAssignableUser(context,body.agentId);if(agent.role.code!=="AGENT")throw new Response("Promotor inválido",{status:400});agentId=agent.id;supervisorId=agent.supervisorId}
+    const statusChanged=body.status&&body.status!==current.status;const item=await prisma.$transaction(async tx=>{const dateField=statusChanged?dateByStatus[body.status]:undefined;const updated=await tx.sale.update({where:{id},data:{agentId,supervisorId,sec:body.sec,sot:body.sot,msisdn:body.msisdn,salesChannel:body.salesChannel,pointOfSale:body.pointOfSale,source:body.source,notes:body.notes,saleAmount:body.saleAmount,status:body.status,...(dateField?{[dateField]:new Date()}:{} )}});if(statusChanged){await tx.saleStatusHistory.create({data:{tenantId:context.tenantId,saleId:id,previousStatus:current.status,newStatus:body.status,changedByUserId:context.userId,reason:body.reason||null}});if(current.leadId&&pipelineByStatus[body.status]){const stage=await tx.pipelineStage.findUnique({where:{tenantId_code:{tenantId:context.tenantId,code:pipelineByStatus[body.status]}}});if(stage){await tx.lead.update({where:{id:current.leadId},data:{pipelineStageId:stage.id}});await tx.leadStageHistory.create({data:{tenantId:context.tenantId,leadId:current.leadId,pipelineStageId:stage.id,changedByUserId:context.userId}})}}}return updated});return Response.json({item});
+  }catch(error){return crmError(error)}
+}
