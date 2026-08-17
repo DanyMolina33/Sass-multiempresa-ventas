@@ -21,6 +21,11 @@
 # misc
 .DS_Store
 *.pem
+*.key
+*.pfx
+*.p12
+*credentials*.json
+*service-account*.json
 
 # debug
 npm-debug.log*
