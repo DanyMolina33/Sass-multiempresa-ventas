@@ -1327,6 +1327,142 @@ model InternalMessage {
   @@index([tenantId, status])
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// FINAL GATE AUDIT FINDING (2026-08-17): the six models below are real, pre-existing tables discovered live in the
+// database, created by migrations outside this working tree's history (see CURRENT_STATE.md), with REAL data —
+// most notably one completed, EARNINGS_DISTRIBUTED Settlement covering all 630 YC sales with 150 real PAID/EARNED
+// CommissionEarned rows (PROMOTER/SUPERVISOR/MANAGER split). NO application code anywhere reads or writes these
+// tables — the live Dashboard/Finanzas/Liquidaciones UI reads ReconciliationImport/ReconciliationResult instead,
+// which has ZERO rows for YC. These two systems are NOT reconciled with each other in this block. Modeled here
+// read-only (scalar FKs only, no relations, matching the CommercialGoal/ActionPlan precedent) purely so this real
+// data is queryable and documented — this does NOT wire them into any Dashboard/Finance calculation, since
+// deciding how (or whether) to unify them with the live ReconciliationResult pipeline is a business-rule decision
+// outside this audit's authority (see FINAL_GATE_AUDIT.md).
+// ---------------------------------------------------------------------------------------------------------------
+
+model Settlement {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  periodStart         DateTime
+  periodEnd           DateTime
+  totalVentasYC       Int
+  reconocidas         Int
+  pendientes          Int
+  rechazadas          Int
+  noEncontradas       Int
+  comisionEsperada    Decimal  @db.Decimal(14, 2)
+  comisionReconocida  Decimal  @db.Decimal(14, 2)
+  comisionPendiente   Decimal  @db.Decimal(14, 2)
+  comisionPerdida     Decimal  @db.Decimal(14, 2)
+  comisionPagada      Decimal? @db.Decimal(14, 2)
+  status              String
+  notes               String?
+  settlementDate      DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([tenantId, status])
+}
+
+model SettlementDetail {
+  id                String   @id @default(cuid())
+  tenantId          String
+  settlementId      String
+  ventaId           String?
+  saleId            String?
+  dniCliente        String?
+  nombreCliente     String?
+  telefono          String?
+  estado            String?
+  motivo            String?
+  comisionEsperada  Decimal? @db.Decimal(14, 2)
+  comisionClaro     Decimal? @db.Decimal(14, 2)
+  diferencia        Decimal? @db.Decimal(14, 2)
+  polizaNum         String?
+  estadoFactura     String?
+  distribuidor      String?
+  fechaVenta        DateTime?
+  createdAt         DateTime @default(now())
+
+  @@index([tenantId, settlementId])
+  @@index([tenantId, saleId])
+}
+
+model CommissionEarned {
+  id            String    @id @default(cuid())
+  tenantId      String
+  employeeId    String?
+  saleId        String?
+  settlementId  String?
+  monto         Decimal   @db.Decimal(14, 2)
+  nivel         String
+  periodo       String
+  status        String
+  createdAt     DateTime  @default(now())
+  paidAt        DateTime?
+
+  @@index([tenantId, employeeId])
+  @@index([tenantId, settlementId])
+}
+
+model CommissionAdjustment {
+  id                     String   @id @default(cuid())
+  tenantId               String
+  saleId                 String?
+  reconciliationId       String
+  reason                 String
+  amount                 Decimal  @db.Decimal(14, 2)
+  distributedPromoter    Decimal? @db.Decimal(14, 2)
+  distributedSupervisor  Decimal? @db.Decimal(14, 2)
+  distributedCompany     Decimal? @db.Decimal(14, 2)
+  createdAt              DateTime @default(now())
+
+  @@index([tenantId, reconciliationId])
+}
+
+model CommercialZone {
+  id                        String   @id @default(cuid())
+  tenantId                  String
+  name                      String
+  code                      String
+  active                    Boolean  @default(true)
+  zonalSupervisorEmployeeId String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  @@unique([tenantId, code])
+}
+
+model CommercialUnit {
+  id                    String   @id @default(cuid())
+  tenantId              String
+  zoneId                String
+  name                  String
+  code                  String
+  supervisorEmployeeId  String?
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([tenantId, code])
+  @@index([tenantId, zoneId])
+}
+
+model EmployeeAssignmentHistory {
+  id              String   @id @default(cuid())
+  tenantId        String
+  employeeId      String
+  fromStoreId     String?
+  toStoreId       String?
+  effectiveAt     DateTime
+  reason          String?
+  notes           String?
+  changedByUserId String?
+  createdAt       DateTime @default(now())
+
+  @@index([tenantId, employeeId])
+}
+
 model InternalMessageRecipient {
   id        String          @id @default(cuid())
   tenantId  String

@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { readFile } from "node:fs/promises";
 import { getPrisma } from "../lib/prisma";
-import { getActiveCrmFeatureCodes, getFirstActiveCrmFeature, requireCrmFeature } from "../lib/vertical-template";
+import { getActiveCrmFeatureCodes, getFirstActiveCrmFeature, requireCrmFeature, NAVIGABLE_CRM_FEATURES } from "../lib/vertical-template";
 
 const prisma=getPrisma();
 function check(value:unknown,message:string){if(!value)throw new Error(message);console.log(`✓ ${message}`)}
@@ -17,11 +17,14 @@ async function main(){
     await set("commissions",false);active=await getActiveCrmFeatureCodes(yc.id);check(!active.includes("commissions")&&active.includes("sales")&&active.includes("reconciliation"),"6. Desactivar Comisiones no afecta el resto del CRM");
     await set("reconciliation",false);active=await getActiveCrmFeatureCodes(yc.id);check(!active.includes("reconciliation")&&active.includes("sales")&&active.includes("products"),"7. Desactivar Liquidaciones no afecta las demás funciones");blocked=false;try{await requireCrmFeature(yc.id,"reconciliation")}catch(error){blocked=error instanceof Response&&error.status===403}check(blocked,"8. Acceso directo a Liquidaciones inactivas queda bloqueado");
     await set("leads",true);await set("commissions",true);await set("reconciliation",true);check((await getActiveCrmFeatureCodes(yc.id)).includes("leads")&&(await getActiveCrmFeatureCodes(yc.id)).includes("commissions")&&(await getActiveCrmFeatureCodes(yc.id)).includes("reconciliation"),"9. Reactivar funciones las hace reaparecer");
-    for(const code of ["leads","customers","sales","follow-ups","products","commercial-plans","commissions","reconciliation"])await set(code,false);check(await getFirstActiveCrmFeature(yc.id)===null,"10. Sin funciones navegables activas se obtiene estado controlado, no ruta circular");
+    // Iterates the full NAVIGABLE_CRM_FEATURES list (not a hand-copied subset) so this stays correct as new
+    // features are added — a hardcoded 8-of-12 list here previously missed "promoter-space" (added in a later
+    // block) and produced a false failure, since a feature this test never touched was still active.
+    for(const code of NAVIGABLE_CRM_FEATURES)if(features.some(item=>item.feature.code===code))await set(code,false);check(await getFirstActiveCrmFeature(yc.id)===null,"10. Sin funciones navegables activas se obtiene estado controlado, no ruta circular");
     check(byCode("reconciliation").feature.name==="Liquidaciones","11. Panel Maestro muestra Liquidaciones");
     const indexSource=await readFile(new URL("../app/crm/page.tsx",import.meta.url),"utf8"),viewSource=await readFile(new URL("../app/crm/[view]/page.tsx",import.meta.url),"utf8"),liquidationsSource=await readFile(new URL("../components/reconciliation-workspace.tsx",import.meta.url),"utf8");check(!indexSource.includes('/crm/leads')&&!viewSource.includes('/crm/leads'),"12. Se eliminó la dependencia obligatoria de /crm/leads");check(liquidationsSource.includes('nav.filter(([id])=>meta.activeFeatures.includes(id))'),"13. Liquidaciones también filtra su navegación por funciones activas");
   }finally{await Promise.all(features.map(item=>prisma.tenantCrmFeature.update({where:{tenantId_featureId:{tenantId:yc.id,featureId:item.featureId}},data:{active:original.get(item.featureId)!}})))}
-  const after=await counts();check(JSON.stringify(before)===JSON.stringify(after),"14. Desactivar y reactivar funciones no elimina ni modifica datos");check((await getActiveCrmFeatureCodes(yc.id)).length===features.filter(item=>item.active&&["leads","customers","sales","follow-ups","products","commercial-plans","commissions","reconciliation"].includes(item.feature.code)).length,"15. La configuración original de YC quedó restaurada");console.log(JSON.stringify({before,after,active:await getActiveCrmFeatureCodes(yc.id)},null,2));
+  const after=await counts();check(JSON.stringify(before)===JSON.stringify(after),"14. Desactivar y reactivar funciones no elimina ni modifica datos");check((await getActiveCrmFeatureCodes(yc.id)).length===features.filter(item=>item.active&&(NAVIGABLE_CRM_FEATURES as readonly string[]).includes(item.feature.code)).length,"15. La configuración original de YC quedó restaurada");console.log(JSON.stringify({before,after,active:await getActiveCrmFeatureCodes(yc.id)},null,2));
 }
 main().finally(()=>prisma.$disconnect());
 
