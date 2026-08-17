@@ -45,7 +45,8 @@
     "finance:seed-categories": "tsx scripts/seed-finance-categories.ts",
     "verify:economic-priority": "tsx scripts/verify-economic-rule-priority.ts",
     "payroll:seed-base": "tsx scripts/seed-payroll-base.ts",
-    "commercial:seed-features": "tsx scripts/seed-commercial-features.ts"
+    "commercial:seed-features": "tsx scripts/seed-commercial-features.ts",
+    "verify:whatsapp-core": "tsx scripts/verify-whatsapp-communication-core.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -53,6 +53,7 @@ model Tenant {
   moduleGrants                UserModuleGrant[]
   internalMessages            InternalMessage[]
   actionPlans                 ActionPlan[]
+  whatsappConnection          WhatsAppConnection?
   createdAt                   DateTime                     @default(now())
   updatedAt                   DateTime                     @updatedAt
 
@@ -227,6 +228,8 @@ model User {
   moduleGrants                   UserModuleGrant[]
   sentMessages                   InternalMessage[]         @relation("MessageSender")
   receivedMessages               InternalMessageRecipient[]
+  sentWhatsAppMessages           WhatsAppMessage[]
+  connectedWhatsAppConnections   WhatsAppConnection[]
   assignedActionPlans            ActionPlan[]               @relation("ActionPlanAssignee")
   createdActionPlans             ActionPlan[]               @relation("ActionPlanCreatedBy")
   supervisor                     User?                     @relation("CommercialHierarchy", fields: [supervisorId], references: [id], onDelete: SetNull)
@@ -320,6 +323,7 @@ model Customer {
   importBatch     ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   followUps       FollowUp[]
   sales           Sale[]
+  whatsappConversations WhatsAppConversation[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
@@ -1475,4 +1479,188 @@ model InternalMessageRecipient {
 
   @@unique([messageId, userId])
   @@index([tenantId, userId, readAt])
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// MentoriFY Communication Core — Meta WhatsApp base (block 32, 2026-08-17). Reusable, portable, provider-agnostic
+// data model: WhatsAppConnection/PhoneNumber holds the tenant's own Meta credentials (never a global/shared
+// token — section 7 of the block spec); Conversation/Message are generic enough to be reused by a future
+// non-telecom vertical without knowing about Customer/Sale/CRM at all (see lib/communication-core/).
+// ---------------------------------------------------------------------------------------------------------------
+
+enum WhatsAppConnectionStatus {
+  DISCONNECTED
+  CONNECTING
+  CONNECTED
+  ERROR
+}
+
+enum WhatsAppPhoneNumberStatus {
+  PENDING
+  VERIFIED
+  DISABLED
+}
+
+// One per tenant (never shared across tenants — section 7/27). "1 tenant -> N numbers" is modeled via
+// phoneNumbers below even though V1 only ever provisions one; never hardcode a single-number assumption.
+model WhatsAppConnection {
+  id                   String                    @id @default(cuid())
+  tenantId             String                    @unique
+  provider             String                    @default("META")
+  status               WhatsAppConnectionStatus  @default(DISCONNECTED)
+  wabaId               String?
+  businessId           String?
+  displayName          String?
+  // Authenticated-encrypted (AES-256-GCM) via lib/communication-core/security/encryption.ts — never plaintext,
+  // never sent to the browser. tokenMetadata holds only non-secret bookkeeping (token type, scopes, expiry hint).
+  encryptedAccessToken String?
+  tokenMetadata        Json?
+  connectedByUserId    String?
+  connectedAt          DateTime?
+  disconnectedAt       DateTime?
+  lastErrorMessage     String?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+
+  tenant        Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connectedBy   User?                  @relation(fields: [connectedByUserId], references: [id], onDelete: SetNull)
+  phoneNumbers  WhatsAppPhoneNumber[]
+  conversations WhatsAppConversation[]
+  templates     WhatsAppTemplate[]
+
+  @@index([tenantId, status])
+}
+
+model WhatsAppPhoneNumber {
+  id                 String                     @id @default(cuid())
+  tenantId           String
+  connectionId       String
+  phoneNumberId      String                     @unique
+  displayPhoneNumber String?
+  verifiedName       String?
+  status             WhatsAppPhoneNumberStatus  @default(PENDING)
+  isDefault          Boolean                    @default(true)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  connection    WhatsAppConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  conversations WhatsAppConversation[]
+
+  @@index([tenantId, connectionId])
+}
+
+enum WhatsAppConversationStatus {
+  OPEN
+  CLOSED
+}
+
+model WhatsAppConversation {
+  id                   String                      @id @default(cuid())
+  tenantId             String
+  connectionId         String
+  whatsappPhoneNumberId String
+  // Optional link to the existing Customer, resolved only via ContactCenterAdapter's explicit, unambiguous rule
+  // (section 18) — never guessed, and the Core itself never queries Customer directly (section 3/23).
+  customerId           String?
+  externalContactPhone String
+  externalContactName  String?
+  status               WhatsAppConversationStatus  @default(OPEN)
+  lastMessageAt        DateTime?
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+
+  connection  WhatsAppConnection    @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  phoneNumber WhatsAppPhoneNumber   @relation(fields: [whatsappPhoneNumberId], references: [id], onDelete: Cascade)
+  customer    Customer?             @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  messages    WhatsAppMessage[]
+
+  @@unique([tenantId, whatsappPhoneNumberId, externalContactPhone])
+  @@index([tenantId, status, lastMessageAt])
+  @@index([tenantId, customerId])
+}
+
+enum WhatsAppMessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum WhatsAppMessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  RECEIVED
+}
+
+model WhatsAppMessage {
+  id                String                    @id @default(cuid())
+  tenantId          String
+  conversationId    String
+  direction         WhatsAppMessageDirection
+  // Meta's wamid — the idempotency key for inbound webhook delivery (section 28) and for correlating outbound
+  // delivery-status updates. Unique so a re-delivered webhook event can never create a second row.
+  externalMessageId String?                   @unique
+  senderUserId      String?
+  body              String?
+  messageType       String                    @default("text")
+  status            WhatsAppMessageStatus     @default(QUEUED)
+  rawPayload        Json?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  createdAt         DateTime                  @default(now())
+
+  conversation WhatsAppConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderUser   User?                @relation(fields: [senderUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, conversationId, createdAt])
+}
+
+enum WhatsAppTemplateStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model WhatsAppTemplate {
+  id                 String                  @id @default(cuid())
+  tenantId           String
+  connectionId       String
+  name               String
+  language           String
+  category           String?
+  status             WhatsAppTemplateStatus  @default(DRAFT)
+  externalTemplateId String?
+  bodyText           String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  connection WhatsAppConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, connectionId, name, language])
+}
+
+enum DataDeletionRequestStatus {
+  RECEIVED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// Meta Data Deletion Request callback (section 14) — tracks the request/status flow Meta requires; never triggers
+// a destructive delete on its own. Real deletion (if any) is a separate, deliberate, documented decision.
+model MetaDataDeletionRequest {
+  id               String                     @id @default(cuid())
+  tenantId         String?
+  metaUserId       String?
+  confirmationCode String                     @unique
+  status           DataDeletionRequestStatus  @default(RECEIVED)
+  requestPayload   Json?
+  processedAt      DateTime?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+
+  @@index([tenantId, status])
 }
