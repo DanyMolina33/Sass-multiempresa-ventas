@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hash } from "bcryptjs";
 import { hasPermission, isSuperAdmin, requireSession, tenantScope } from "@/lib/auth";
+import { generateUniqueAccessCode } from "@/lib/access-code";
 import { getPrisma } from "@/lib/prisma";
 
 async function errorResponse(error: unknown) {
@@ -35,7 +36,7 @@ export async function GET(request: NextRequest) {
     const tenantId = tenantScope(session, request.nextUrl.searchParams.get("tenantId"));
     const includeInactive = request.nextUrl.searchParams.get("includeInactive") === "1";
     const [users, roles, limit, activeCount] = await Promise.all([
-      getPrisma().user.findMany({ where: { tenantId, ...(includeInactive ? {} : { status: "ACTIVE" }) }, select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, createdAt: true, role: { select: { id: true, code: true, name: true } } }, orderBy: { name: "asc" } }),
+      getPrisma().user.findMany({ where: { tenantId, ...(includeInactive ? {} : { status: "ACTIVE" }) }, select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, createdAt: true, role: { select: { id: true, code: true, name: true } } }, orderBy: { name: "asc" } }),
       getPrisma().role.findMany({ where: { tenantId }, select: { id: true, code: true, name: true }, orderBy: { name: "asc" } }),
       userLimit(tenantId), getPrisma().user.count({ where: { tenantId, status: "ACTIVE" } }),
     ]);
@@ -56,7 +57,8 @@ export async function POST(request: NextRequest) {
     if (!role || role.code === "SUPER_ADMIN") throw new Response("Rol no permitido para este tenant", { status: 403 });
     if (emailTaken) return NextResponse.json({ message: "Ya existe un usuario con este correo." }, { status: 409 });
     const supervisorId = await resolveSupervisor(tenantId, role.code, body.supervisorId);
-    const user = await getPrisma().user.create({ data: { name: body.name.trim(), email: body.email.trim().toLowerCase(), passwordHash: await hash(body.password, 12), tenantId, roleId: role.id, supervisorId }, select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, role: { select: { id: true, code: true, name: true } } } });
+    const accessCode = await generateUniqueAccessCode();
+    const user = await getPrisma().user.create({ data: { name: body.name.trim(), email: body.email.trim().toLowerCase(), passwordHash: await hash(body.password, 12), tenantId, roleId: role.id, supervisorId, accessCode }, select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, role: { select: { id: true, code: true, name: true } } } });
     return NextResponse.json({ user }, { status: 201 });
   } catch (error) { return await errorResponse(error); }
 }

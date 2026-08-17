@@ -13,7 +13,7 @@ import { FinanceWorkspace } from "@/components/finance-workspace";
 import { PayrollWorkspace } from "@/components/payroll-workspace";
 import { ExecutiveDashboard } from "@/components/executive-dashboard";
 import { CommercialManagementWorkspace } from "@/components/commercial-management-workspace";
-import { PromoterSpaceWorkspace } from "@/components/promoter-space-workspace";
+import { PromoterSpaceWorkspace, PromoterFollowUpsWorkspace, PromoterRankingWorkspace, PromoterCommissionsWorkspace, PromoterAgendaWorkspace, PromoterGoalsWorkspace, PromoterProfileWorkspace } from "@/components/promoter-space-workspace";
 
 type CoreLimit = { value: number; definition: { id: string; code: string; name: string; unit: string } };
 type CorePlan = { id: string; name: string; code: string; limits: CoreLimit[] };
@@ -30,9 +30,15 @@ function Status({ state = "operational", children }: { state?: HealthState; chil
 }
 
 const AGENT_NAV: Array<[string, { label: string; icon: string; href: string }]> = [
-  ["promoter-space", { label: "Mi espacio", icon: "◎", href: "/crm/promoter-space" }],
-  ["sales", { label: "Mis ventas", icon: "◈", href: "/crm/sales" }],
+  ["promoter-space", { label: "Mi día", icon: "☀", href: "/crm/promoter-space" }],
   ["customers", { label: "Mis clientes", icon: "◑", href: "/crm/customers" }],
+  ["sales", { label: "Mis ventas", icon: "◈", href: "/crm/sales" }],
+  ["promoter-followups", { label: "Seguimientos", icon: "◷", href: "/crm/promoter-followups" }],
+  ["promoter-goals", { label: "Mis metas", icon: "◎", href: "/crm/promoter-goals" }],
+  ["promoter-ranking", { label: "Mi ranking", icon: "♛", href: "/crm/promoter-ranking" }],
+  ["promoter-commissions", { label: "Mis comisiones", icon: "◆", href: "/crm/promoter-commissions" }],
+  ["promoter-agenda", { label: "Agenda", icon: "▤", href: "/crm/promoter-agenda" }],
+  ["promoter-profile", { label: "Mi perfil", icon: "☺", href: "/crm/promoter-profile" }],
 ];
 
 function Sidebar({ section, crmView, open, close, session, companyMode }: { section: SectionKey; crmView?: string; open: boolean; close: () => void; session: SafeSession; companyMode: boolean }) {
@@ -224,9 +230,12 @@ function VerticalEditor({tenant}:{tenant:CoreTenant}){
   return <section className="branding-editor"><div className="card-head"><div><h2>Plantilla y Funciones CRM</h2><p>{template?<><strong>{template.name}</strong> · {template.code}</>:"Este tenant no tiene una plantilla vertical asignada."}</p></div></div><label>Plantilla asignada<select value={template?.id??""} onChange={event=>void update({verticalTemplateId:event.target.value||null})}><option value="">Sin plantilla</option>{templates.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>{template&&<div className="settings-grid">{template.features.map(feature=><article key={feature.id}><div className="grow"><strong>{feature.name}</strong><p>{feature.code}</p></div><label className="switch"><input type="checkbox" checked={feature.tenantFeatures.some(item=>item.active)} onChange={event=>void update({featureId:feature.id,active:event.target.checked})}/><span/></label></article>)}</div>} {configuration&&<form className="user-form" onSubmit={event=>{event.preventDefault();const data=new FormData(event.currentTarget);void update({maxUsers:Number(data.get("maxUsers"))})}}><label>Máximo de usuarios activos<input name="maxUsers" type="number" min="1" defaultValue={configuration.maxUsers}/></label><div><small>Usuarios activos: {configuration.activeUsers}</small><br/><small>Cupos disponibles: {Math.max(0,configuration.maxUsers-configuration.activeUsers)}</small></div><button className="primary">Guardar límite</button></form>}{message&&<p>{message}</p>}</section>
 }
 
-type ManagedUser = { id: string; name: string; email: string; jobTitle?:string|null; status: "ACTIVE" | "INACTIVE"; supervisorId: string | null; role: { id: string; code: string; name: string } };
+type ManagedUser = { id: string; name: string; email: string; jobTitle?:string|null; status: "ACTIVE" | "INACTIVE"; supervisorId: string | null; accessCode: string | null; role: { id: string; code: string; name: string } };
 type ManagedRole = { id: string; code: string; name: string };
 type CreatedAccess = { name: string; email: string; roleName: string; password: string; link: string | null };
+// The short link (/p/[code]) is the only one ever shown to admins — no long /t/[slug]/login?email= link, per the
+// "no entregar links largos" requirement. accessCode is generated server-side; null only for not-yet-generated.
+function shortLink(accessCode: string | null) { return accessCode ? `/p/${accessCode}` : null; }
 
 // Technical role codes stay stable (COMPANY_ADMIN/SUPERVISOR/AGENT); only the label shown to admins changes to the
 // business-friendly names the client uses (Gerente/Supervisor/Promotor). Unknown codes fall back to role.name so
@@ -274,7 +283,7 @@ function CreateUserForm({ tenantId, availableRoles, users, close, onCreated }: {
     const response = await fetch("/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), email: data.get("email"), password, roleId, supervisorId: isAgent ? (supervisorId || null) : null, tenantId }) });
     const result = await response.json(); setSaving(false);
     if (!response.ok) return setMessage(result.message);
-    onCreated({ name: result.user.name, email: result.user.email, roleName: roleLabel(result.user.role.code, result.user.role.name), password, link: null });
+    onCreated({ name: result.user.name, email: result.user.email, roleName: roleLabel(result.user.role.code, result.user.role.name), password, link: shortLink(result.user.accessCode) });
   }
 
   return <section className="card create-company"><div className="card-head"><div><h2>Nuevo usuario</h2><p>La cuenta quedará vinculada únicamente a esta empresa.</p></div><button onClick={close} aria-label="Cerrar">×</button></div>
@@ -290,18 +299,27 @@ function CreateUserForm({ tenantId, availableRoles, users, close, onCreated }: {
   </section>;
 }
 
-function EditUserModal({ user, tenantId, availableRoles, users, buildLink, close, onSaved }: { user: ManagedUser; tenantId?: string; availableRoles: ManagedRole[]; users: ManagedUser[]; buildLink: (email: string) => string | null; close: () => void; onSaved: (access: CreatedAccess | null) => void }) {
+function EditUserModal({ user, tenantId, availableRoles, users, close, onSaved }: { user: ManagedUser; tenantId?: string; availableRoles: ManagedRole[]; users: ManagedUser[]; close: () => void; onSaved: (access: CreatedAccess | null) => void }) {
   const [name, setName] = useState(user.name);
   const [email, setEmail] = useState(user.email);
   const [roleId, setRoleId] = useState(user.role.id);
   const [supervisorId, setSupervisorId] = useState(user.supervisorId ?? "");
   const [status, setStatus] = useState(user.status);
   const [password, setPassword] = useState("");
+  const [accessCode, setAccessCode] = useState(user.accessCode);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const selectedRole = availableRoles.find(r => r.id === roleId) ?? user.role;
   const isAgent = selectedRole.code === "AGENT";
-  const link = buildLink(email);
+  const link = shortLink(accessCode);
+
+  async function regenerate() {
+    setMessage("");
+    const response = await fetch(`/api/users/${user.id}/access-code`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenantId }) });
+    const result = await response.json();
+    if (!response.ok) return setMessage(result.message);
+    setAccessCode(result.accessCode);
+  }
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setMessage("");
@@ -312,7 +330,7 @@ function EditUserModal({ user, tenantId, availableRoles, users, buildLink, close
     const response = await fetch(`/api/users/${user.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const result = await response.json(); setSaving(false);
     if (!response.ok) return setMessage(result.message);
-    if (password) onSaved({ name: result.user.name, email: result.user.email, roleName: roleLabel(result.user.role.code, result.user.role.name), password, link: buildLink(result.user.email) });
+    if (password) onSaved({ name: result.user.name, email: result.user.email, roleName: roleLabel(result.user.role.code, result.user.role.name), password, link: shortLink(result.user.accessCode) });
     else onSaved(null);
   }
 
@@ -325,21 +343,31 @@ function EditUserModal({ user, tenantId, availableRoles, users, buildLink, close
       {isAgent && <label>Supervisor<select value={supervisorId} onChange={event => setSupervisorId(event.target.value)}><option value="">Seleccionar</option>{supervisorCandidates(users, user.id).map(s => <option key={s.id} value={s.id}>{s.name} ({roleLabel(s.role.code, s.role.name)})</option>)}</select></label>}
       <label>Estado<select value={status} onChange={event => setStatus(event.target.value as "ACTIVE" | "INACTIVE")}><option value="ACTIVE">Activo</option><option value="INACTIVE">Inactivo</option></select></label>
       <label>Nueva contraseña temporal (opcional)<input type="password" minLength={12} value={password} onChange={event => setPassword(event.target.value)} placeholder="Dejar vacío para no cambiarla" /></label>
-      <p className="wide" style={{ fontSize: 10, color: "#8b90a1" }}>Enlace de acceso: {link ? `${window.location.origin}${link}` : "No disponible: configura el subdominio de la empresa."}</p>
+      <p className="wide" style={{ fontSize: 10, color: "#8b90a1" }}>Enlace de acceso: {link ? `${window.location.origin}${link}` : "Aún no generado"} · <button type="button" className="crm-edit" onClick={() => void regenerate()}>{accessCode ? "Regenerar" : "Generar"} enlace</button></p>
       {message && <p className="form-error">{message}</p>}
       <button className="primary" disabled={saving}>{saving ? "Guardando…" : "Guardar cambios"}</button>
     </form>
   </aside></div>;
 }
 
-function AccessModal({ user, tenantId, link, close, onReset }: { user: ManagedUser; tenantId?: string; link: string | null; close: () => void; onReset: (access: CreatedAccess) => void }) {
+function AccessModal({ user, tenantId, close, onReset }: { user: ManagedUser; tenantId?: string; close: () => void; onReset: (access: CreatedAccess) => void }) {
+  const [accessCode, setAccessCode] = useState(user.accessCode);
   const [resetting, setResetting] = useState(false);
   const [password, setPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [copied, setCopied] = useState(false);
+  const link = shortLink(accessCode);
   const fullLink = link ? `${window.location.origin}${link}` : null;
   function copy() { if (!fullLink) return; void navigator.clipboard.writeText(fullLink); setCopied(true); window.setTimeout(() => setCopied(false), 1500); }
+
+  async function regenerate() {
+    setMessage("");
+    const response = await fetch(`/api/users/${user.id}/access-code`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tenantId }) });
+    const result = await response.json();
+    if (!response.ok) return setMessage(result.message);
+    setAccessCode(result.accessCode);
+  }
 
   async function submitReset(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setMessage("");
@@ -355,11 +383,12 @@ function AccessModal({ user, tenantId, link, close, onReset }: { user: ManagedUs
       <div><small>NOMBRE</small><strong>{user.name}</strong></div>
       <div><small>ROL</small><strong>{roleLabel(user.role.code, user.role.name)}</strong></div>
       <div><small>CORREO</small><strong>{user.email}</strong></div>
-      <div><small>URL DE ACCESO</small><strong>{fullLink ?? "No disponible: configura el subdominio de la empresa."}</strong></div>
+      <div><small>URL DE ACCESO</small><strong>{fullLink ?? "Aún no generado"}</strong></div>
     </div>
     <div className="access-card-actions">
       {fullLink && <button className="secondary" onClick={copy}>Copiar enlace</button>}
       {link && <a className="secondary" href={link} target="_blank" rel="noreferrer">Abrir portal</a>}
+      <button className="secondary" onClick={() => void regenerate()}>{accessCode ? "Regenerar enlace" : "Generar enlace"}</button>
       <button className="secondary" onClick={() => setResetting(true)}>Restablecer contraseña</button>
     </div>
     {copied && <p className="branding-feedback">Copiado ✓</p>}
@@ -368,10 +397,11 @@ function AccessModal({ user, tenantId, link, close, onReset }: { user: ManagedUs
       {message && <p className="form-error">{message}</p>}
       <button className="primary" disabled={saving}>{saving ? "Guardando…" : "Confirmar restablecimiento"}</button>
     </form>}
+    {!resetting && message && <p className="form-error">{message}</p>}
   </aside></div>;
 }
 
-function Users({ tenantId, tenantSlug }: { tenantId?: string; tenantSlug?: string | null }) {
+function Users({ tenantId }: { tenantId?: string }) {
   const [users, setUsers] = useState<ManagedUser[]>([]); const [availableRoles, setAvailableRoles] = useState<ManagedRole[]>([]);
   const [limit, setLimit] = useState(0); const [activeCount, setActiveCount] = useState(0); const [canManage, setCanManage] = useState(false);
   const [loading, setLoading] = useState(true); const [showCreate, setShowCreate] = useState(false); const [showInactive, setShowInactive] = useState(false); const [message, setMessage] = useState("");
@@ -386,15 +416,14 @@ function Users({ tenantId, tenantSlug }: { tenantId?: string; tenantSlug?: strin
   const loadUsers = useCallback(async () => { setLoading(true); const response = await fetch(`/api/users${query}`); const result = await response.json(); if (response.ok) { setUsers(result.users); setAvailableRoles(result.roles); setLimit(result.limit); setActiveCount(result.activeCount); setCanManage(result.canManage); setMessage(""); } else setMessage(result.message); setLoading(false); }, [query]);
   useEffect(() => { const timer = window.setTimeout(() => void loadUsers(), 0); return () => window.clearTimeout(timer); }, [loadUsers]);
 
-  function buildLink(email: string) { return tenantSlug ? `/t/${tenantSlug}/login?email=${encodeURIComponent(email)}` : null; }
   async function toggleUser(user: ManagedUser) { const response = await fetch(`/api/users/${user.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: user.status === "ACTIVE" ? "INACTIVE" : "ACTIVE", tenantId }) }); const result = await response.json(); if (!response.ok) return setMessage(result.message); await loadUsers(); }
 
   return <><section className="page-title"><div><span className="eyebrow">ACCESO MULTIEMPRESA</span><h1>Usuarios</h1><p>Administra el equipo dentro de los límites y roles de la empresa.</p></div>{canManage && <button className="primary" onClick={() => setShowCreate(true)}>＋ Nuevo usuario</button>}</section>
     <div className="user-summary"><div><small>USUARIOS ACTIVOS</small><strong>{activeCount} / {limit}</strong><div><i style={{ width: `${limit ? Math.min(100, activeCount / limit * 100) : 0}%` }}/></div></div><p>{activeCount >= limit ? "Has alcanzado el límite de usuarios de tu plan." : `Puedes crear ${limit - activeCount} usuario(s) más.`}</p></div>
-    {showCreate && <CreateUserForm tenantId={tenantId} availableRoles={availableRoles} users={users} close={() => setShowCreate(false)} onCreated={access => { setShowCreate(false); setCreated({ ...access, link: buildLink(access.email) }); void loadUsers(); }} />}
+    {showCreate && <CreateUserForm tenantId={tenantId} availableRoles={availableRoles} users={users} close={() => setShowCreate(false)} onCreated={access => { setShowCreate(false); setCreated(access); void loadUsers(); }} />}
     {created && <AccessCard title="Acceso creado correctamente" access={created} close={() => setCreated(null)} />}
-    {editingUser && <EditUserModal user={editingUser} tenantId={tenantId} availableRoles={availableRoles} users={users} buildLink={buildLink} close={() => setEditingUser(null)} onSaved={access => { setEditingUser(null); if (access) setCreated(access); void loadUsers(); }} />}
-    {accessUser && <AccessModal user={accessUser} tenantId={tenantId} link={buildLink(accessUser.email)} close={() => setAccessUser(null)} onReset={access => { setAccessUser(null); setCreated(access); void loadUsers(); }} />}
+    {editingUser && <EditUserModal user={editingUser} tenantId={tenantId} availableRoles={availableRoles} users={users} close={() => setEditingUser(null)} onSaved={access => { setEditingUser(null); if (access) setCreated(access); void loadUsers(); }} />}
+    {accessUser && <AccessModal user={accessUser} tenantId={tenantId} close={() => setAccessUser(null)} onReset={access => { setAccessUser(null); setCreated(access); void loadUsers(); }} />}
     {message && <p className="form-error">{message}</p>}
     <label className="inactive-toggle" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#70768c" }}><input type="checkbox" checked={showInactive} onChange={event => setShowInactive(event.target.checked)} /> Mostrar cuentas inactivas</label>
     <section className="card users-card">{loading ? <div className="empty-core">Consultando usuarios…</div> : <div className="users-table"><div className="users-row users-head"><span>Usuario</span><span>Rol</span><span>Estado</span><span>Acción</span></div>{users.map(user => <div className="users-row" key={user.id}><div><span className="user-avatar">{user.name.split(" ").map(part => part[0]).join("").slice(0,2)}</span><div><strong>{user.name}</strong><small>{user.email}</small></div></div><span className="role-pill">{roleLabel(user.role.code, user.role.name)}</span><Status state={user.status === "ACTIVE" ? "operational" : "no-data"}>{user.status === "ACTIVE" ? "Activo" : "Inactivo"}</Status><div className="user-actions"><button className="secondary" disabled={!canManage} onClick={() => setEditingUser(user)}>Editar</button><button className="secondary" disabled={!canManage} onClick={() => setAccessUser(user)}>Acceso</button><button className="secondary" disabled={!canManage} onClick={() => toggleUser(user)}>{user.status === "ACTIVE" ? "Desactivar" : "Activar"}</button></div></div>)}</div>}</section></>;
@@ -422,7 +451,7 @@ function ModulePlaceholder({ section }: { section: SectionKey }) {
   return <><section className="page-title"><div><span className="eyebrow">MÓDULO {content.active ? "DISPONIBLE" : "PREPARADO"}</span><h1>{content.title}</h1><p>{content.description}</p></div><span className={`availability ${content.active ? "enabled" : ""}`}>{content.active ? "Activo en Clínica Demo" : "En construcción"}</span></section><section className="placeholder card"><div className="placeholder-mark">{sections[section].icon}</div><h2>Base modular lista</h2><p>Este espacio ya forma parte de la arquitectura multiempresa. La lógica profunda y las integraciones se incorporarán en una siguiente fase.</p><div className="feature-list">{content.features.map((f,i) => <div key={f}><span>{i+1}</span><strong>{f}</strong><small>{i < 2 ? "Estructura preparada" : "Próxima fase"}</small></div>)}</div><div className="safe-note"><span>i</span><p><strong>Sin integraciones externas</strong><br/>Esta entrega no conecta proveedores ni modifica servicios reales.</p></div></section></>;
 }
 
-export function DashboardShell({ section, session, companyMode = false, crmView, adminCrmTenant = null, crmContextMissing = false }: { section: SectionKey; session: SafeSession; companyMode?: boolean; crmView?: "leads"|"customers"|"sales"|"follow-ups"|"products"|"commercial-plans"|"commissions"|"reconciliation"|"finance"|"payroll"|"commercial-management"|"promoter-space"; adminCrmTenant?: {id:string;name:string}|null; crmContextMissing?: boolean }) {
+export function DashboardShell({ section, session, companyMode = false, crmView, adminCrmTenant = null, crmContextMissing = false }: { section: SectionKey; session: SafeSession; companyMode?: boolean; crmView?: "leads"|"customers"|"sales"|"follow-ups"|"products"|"commercial-plans"|"commissions"|"reconciliation"|"finance"|"payroll"|"commercial-management"|"promoter-space"|"promoter-followups"|"promoter-ranking"|"promoter-commissions"|"promoter-agenda"|"promoter-goals"|"promoter-profile"; adminCrmTenant?: {id:string;name:string}|null; crmContextMissing?: boolean }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [tenants, setTenants] = useState<CoreTenant[]>([]);
   const [plans, setPlans] = useState<CorePlan[]>([]);
@@ -433,6 +462,6 @@ export function DashboardShell({ section, session, companyMode = false, crmView,
   useEffect(() => { const timer = window.setTimeout(() => void loadCore(), 0); return () => window.clearTimeout(timer); }, [loadCore]);
   const selected = tenants.find(tenant => tenant.id === selectedId) ?? (companyMode ? tenants[0] : undefined);
   async function selectTenant(tenantId:string){if(companyMode){setSelectedId(tenantId);return}const response=await fetch("/api/auth/tenant-context",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tenantId:tenantId||null})});const result=await response.json();if(!response.ok){setCoreError(result.message);return}setSelectedId(result.tenant?.id??"");setCoreError("");if(section==="crm")window.location.href="/crm/leads"}
-  const crmContent=crmContextMissing?<section className="card crm-context-empty"><span>◎</span><h2>Selecciona una empresa para acceder al CRM.</h2><p>Usa el selector “Empresa seleccionada” en la parte superior. El contexto será validado antes de abrir los datos comerciales.</p></section>:crmView==="commissions"?<EconomicRulesWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="reconciliation"?<ReconciliationWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="finance"?<FinanceWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="payroll"?<PayrollWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="commercial-management"?<CommercialManagementWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="promoter-space"?<PromoterSpaceWorkspace/>:crmView==="sales"||crmView==="customers"?<CrmOperationalWorkspace view={crmView} administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView?<CrmWorkspace view={crmView} administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:<section className="card crm-context-empty"><span>◇</span><h2>No hay funciones CRM activas para esta organización.</h2><p>Un administrador puede habilitarlas desde Plantilla y Funciones CRM.</p></section>;
-  return <div className="app-shell"><Sidebar section={section} crmView={crmView} open={menuOpen} close={() => setMenuOpen(false)} session={session} companyMode={companyMode} /><main><header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menú">☰</button><div className="breadcrumb"><span>{companyMode ? session.user.branding?.displayName??session.user.tenantName : "Panel Maestro"}</span><b>/</b><strong>{sections[section].label}</strong></div><div className="top-actions"><button aria-label="Buscar">⌕</button><button className="notification" aria-label="Notificaciones">♢<i /></button><div className="tenant"><small>{companyMode ? "Organización" : "Empresa seleccionada"}</small><select value={selectedId} onChange={event => void selectTenant(event.target.value)} disabled={companyMode || !tenants.length} aria-label="Empresa seleccionada"><option value="">{loading ? "Cargando…" : coreError ? "Contexto no disponible" : "Selecciona una empresa"}</option>{tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></div></div></header><div className="content">{section === "dashboard" ? <Dashboard tenant={selected} count={tenants.filter(tenant => tenant.status === "ACTIVE").length} coreError={coreError} companyMode={companyMode} session={session}/> : section === "empresas" ? <Companies tenants={tenants} plans={plans} selectedId={selected?.id ?? ""} loading={loading} error={coreError} onSelect={tenantId=>void selectTenant(tenantId)} reload={() => void loadCore()} canGlobal={session.user.role === "SUPER_ADMIN"}/> : section === "usuarios" ? <Users tenantId={session.user.role === "SUPER_ADMIN" ? selected?.id : undefined} tenantSlug={selected?.branding?.subdomain || selected?.slug || null}/> : section === "crm" ? crmContent : section === "guardian" ? <Guardian/> : <ModulePlaceholder section={section}/>}</div><footer><span>{companyMode?(session.user.branding?.displayName??session.user.tenantName):"MentoriFY Enterprise Platform"}</span><span>{session.user.role} · {coreError ? "Core no disponible" : "Tenant aislado"}</span></footer></main></div>;
+  const crmContent=crmContextMissing?<section className="card crm-context-empty"><span>◎</span><h2>Selecciona una empresa para acceder al CRM.</h2><p>Usa el selector “Empresa seleccionada” en la parte superior. El contexto será validado antes de abrir los datos comerciales.</p></section>:crmView==="commissions"?<EconomicRulesWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="reconciliation"?<ReconciliationWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="finance"?<FinanceWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="payroll"?<PayrollWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="commercial-management"?<CommercialManagementWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="promoter-space"?<PromoterSpaceWorkspace/>:crmView==="promoter-followups"?<PromoterFollowUpsWorkspace/>:crmView==="promoter-ranking"?<PromoterRankingWorkspace/>:crmView==="promoter-commissions"?<PromoterCommissionsWorkspace/>:crmView==="promoter-agenda"?<PromoterAgendaWorkspace/>:crmView==="promoter-goals"?<PromoterGoalsWorkspace/>:crmView==="promoter-profile"?<PromoterProfileWorkspace/>:crmView==="sales"||crmView==="customers"?<CrmOperationalWorkspace view={crmView} administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView?<CrmWorkspace view={crmView} administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:<section className="card crm-context-empty"><span>◇</span><h2>No hay funciones CRM activas para esta organización.</h2><p>Un administrador puede habilitarlas desde Plantilla y Funciones CRM.</p></section>;
+  return <div className="app-shell"><Sidebar section={section} crmView={crmView} open={menuOpen} close={() => setMenuOpen(false)} session={session} companyMode={companyMode} /><main><header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menú">☰</button><div className="breadcrumb"><span>{companyMode ? session.user.branding?.displayName??session.user.tenantName : "Panel Maestro"}</span><b>/</b><strong>{sections[section].label}</strong></div><div className="top-actions"><button aria-label="Buscar">⌕</button><button className="notification" aria-label="Notificaciones">♢<i /></button><div className="tenant"><small>{companyMode ? "Organización" : "Empresa seleccionada"}</small><select value={selectedId} onChange={event => void selectTenant(event.target.value)} disabled={companyMode || !tenants.length} aria-label="Empresa seleccionada"><option value="">{loading ? "Cargando…" : coreError ? "Contexto no disponible" : "Selecciona una empresa"}</option>{tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></div></div></header><div className="content">{section === "dashboard" ? <Dashboard tenant={selected} count={tenants.filter(tenant => tenant.status === "ACTIVE").length} coreError={coreError} companyMode={companyMode} session={session}/> : section === "empresas" ? <Companies tenants={tenants} plans={plans} selectedId={selected?.id ?? ""} loading={loading} error={coreError} onSelect={tenantId=>void selectTenant(tenantId)} reload={() => void loadCore()} canGlobal={session.user.role === "SUPER_ADMIN"}/> : section === "usuarios" ? <Users tenantId={session.user.role === "SUPER_ADMIN" ? selected?.id : undefined}/> : section === "crm" ? crmContent : section === "guardian" ? <Guardian/> : <ModulePlaceholder section={section}/>}</div><footer><span>{companyMode?(session.user.branding?.displayName??session.user.tenantName):"MentoriFY Enterprise Platform"}</span><span>{session.user.role} · {coreError ? "Core no disponible" : "Tenant aislado"}</span></footer></main></div>;
 }

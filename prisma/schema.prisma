@@ -218,6 +218,7 @@ model User {
   sessions                       Session[]
   supervisorId                   String?
   jobTitle                       String?
+  accessCode                     String?                   @unique
   supervisor                     User?                     @relation("CommercialHierarchy", fields: [supervisorId], references: [id], onDelete: SetNull)
   supervisedAgents               User[]                    @relation("CommercialHierarchy")
   assignedLeads                  Lead[]                    @relation("LeadAssignee")
@@ -1116,4 +1117,50 @@ enum EconomicBase {
   EXPECTED_COMPANY_INCOME
   BASE_SALARY
   GROSS_AMOUNT
+}
+
+// CommercialGoal already exists in the database (applied outside this working tree's migration history — see
+// prisma/migrations/20260817000000_user_access_code/migration.sql for context). Modeled here as scalar FKs only
+// (no @relation to CommercialZone/CommercialUnit/Product/ActionPlan, which aren't otherwise defined in this
+// schema) so the Promoter Portal can read real goal targets without pulling in that unrelated, disconnected work.
+enum GoalMetric {
+  ACTIVATED_SALES
+}
+
+enum GoalScopeType {
+  TENANT
+  ZONE
+  UNIT
+  STORE
+  EMPLOYEE
+}
+
+enum GoalStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+  CANCELLED
+}
+
+model CommercialGoal {
+  id           String        @id @default(cuid())
+  tenantId     String
+  code         String
+  name         String
+  description  String?
+  metric       GoalMetric
+  scopeType    GoalScopeType
+  targetValue  Decimal       @db.Decimal(12, 2)
+  periodStart  DateTime
+  periodEnd    DateTime
+  status       GoalStatus    @default(DRAFT)
+  parentGoalId String?
+  storeId      String?
+  employeeId   String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@unique([tenantId, code])
+  @@index([tenantId, employeeId])
+  @@index([tenantId, status])
 }

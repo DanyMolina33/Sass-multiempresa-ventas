@@ -56,7 +56,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const user = await getPrisma().user.update({
       where: { id: userId },
       data: { name: body.name?.trim(), email, roleId: body.roleId ? role.id : undefined, supervisorId, status: body.status, passwordHash },
-      select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, role: { select: { id: true, code: true, name: true } } },
+      select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, role: { select: { id: true, code: true, name: true } } },
     });
     // Sessions carry the role/permissions snapshot from login, and a temp password is worthless if the old one still
     // works — invalidate on any of the three so the next request re-authenticates with the new state.
