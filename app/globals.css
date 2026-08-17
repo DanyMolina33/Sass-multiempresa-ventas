@@ -111,3 +111,8 @@ footer{height:47px;border-top:1px solid var(--line);padding:0 36px;display:flex;
 .promoter-sale-meta{display:flex;flex-direction:column;align-items:flex-end;gap:4px}
 .promoter-agenda-time{display:flex;flex-direction:column;min-width:66px}.promoter-agenda-time small{color:#9297a8;font-size:7px}
 @media(max-width:1050px){.promoter-day-grid{grid-template-columns:1fr}}
+.promoter-featured-message{border-left:3px solid var(--purple);background:#f8f7ff}.promoter-featured-message h3{margin:6px 0;font-size:13px}.promoter-featured-message p{font-size:10px;color:#4f5466;margin:0 0 8px}.promoter-message-meta{display:flex;gap:10px;align-items:baseline;font-size:8px;color:#8b90a1}.promoter-message-meta strong{color:#4f5466;font-size:9px}
+.supervisor-seller-strip .card-head small{color:#8b90a1;font-size:8px;text-transform:uppercase}
+.alert-warning{background:#fff7e8}.alert-critical{background:#fdebed}.alert-info{background:#eef1fb}
+.trend-up{color:#1c8a52}.trend-down{color:#c23b4f}.trend-flat{color:#8b90a1}
+.module-grant-list{display:flex;flex-direction:column;gap:2px}.module-grant-row{display:flex;align-items:center;gap:10px;padding:8px 2px;border-top:1px solid #f0f1f4;font-size:9px}.module-grant-row:first-child{border-top:0}.module-grant-row input{width:14px;height:14px}.module-grant-row.locked{opacity:.55}.module-grant-row small{color:#8b90a1;font-size:7px;text-transform:uppercase}

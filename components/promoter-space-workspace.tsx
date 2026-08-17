@@ -10,9 +10,10 @@ type Ranking = { position: number; total: number; entries: RankingEntry[] };
 type FollowUpItem = { id: string; scheduledAt: string; type: string; notes: string | null; customer: { id: string; name: string; phone: string } | null };
 type FollowUpListItem = FollowUpItem & { status: string };
 type RecentSale = { id: string; customerName: string; productName: string; amount: number | null; saleDate: string; status: string };
-type PromoterData = { user: { name: string; email: string; status: string } | null; employee: Employee; supervisorName: string | null; today: SalesSlice; period: SalesSlice; commissions: { projected: number | null; confirmed: number | null }; goal: Goal; ranking: Ranking; followUpsToday: FollowUpItem[]; recentSales: RecentSale[] };
+type FeaturedMessage = { id: string; title: string; body: string; type: string; fromName: string; createdAt: string } | null;
+type PromoterData = { user: { name: string; email: string; status: string } | null; employee: Employee; supervisorName: string | null; today: SalesSlice; period: SalesSlice; commissions: { projected: number | null; confirmed: number | null }; goal: Goal; featuredMessage: FeaturedMessage; ranking: Ranking; followUpsToday: FollowUpItem[]; recentSales: RecentSale[] };
 type CustomerMatch = { id: string; name: string; document: string | null; phone: string };
-type Meta = { products: Array<{ id: string; name: string }>; commercialPlans: Array<{ id: string; name: string; productId: string }> };
+export type Meta = { products: Array<{ id: string; name: string }>; commercialPlans: Array<{ id: string; name: string; productId: string }> };
 
 const OPERATIONS = ["PORTABILIDAD", "ALTA_NUEVA", "PORTABILIDAD_POSTPAGO", "ALTA_NUEVA_POSTPAGO", "MIGRACION", "PREPAGO", "RENOVACION", "LINEA_FIJA", "INTERNET_FIJO", "OTRO"];
 function money(value: number | null) { return value === null ? "Sin datos" : `S/ ${value.toFixed(2)}`; }
@@ -52,6 +53,8 @@ export function PromoterSpaceWorkspace() {
 
   return <>
     <section className="page-title crm-title"><div><span className="eyebrow">PROMOTOR</span><h1>Hola, {data.user ? firstName(data.user.name) : "Promotor"}</h1><p>Hoy tienes {clientesHoy.length} cliente{clientesHoy.length === 1 ? "" : "s"} por atender{data.ranking.total > 1 ? ` y estás #${data.ranking.position} en tu equipo.` : "."}</p></div><button className="primary" onClick={() => setOpen(true)}>＋ Registrar venta</button></section>
+
+    {data.featuredMessage && <section className="card promoter-featured-message"><span className="eyebrow">MENSAJE DE TU SUPERVISOR</span><h3>{data.featuredMessage.title}</h3><p>{data.featuredMessage.body}</p><div className="promoter-message-meta"><strong>{data.featuredMessage.fromName}</strong><small>{new Date(data.featuredMessage.createdAt).toLocaleString("es-PE", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</small></div></section>}
 
     <section className="stats">
       <Kpi label="Ventas hoy" value={String(data.today.total)} />
@@ -153,8 +156,14 @@ export function PromoterCommissionsWorkspace() {
   </>;
 }
 
+type MyActionPlan = { id: string; title: string; problemDescription: string; actionDescription: string; status: string; priority: string; dueAt: string | null };
 export function PromoterGoalsWorkspace() {
   const { data, loading, message } = useLoadPromoterData();
+  const [plans, setPlans] = useState<MyActionPlan[] | null>(null);
+  const loadPlans = useCallback(async () => { const response = await fetch("/api/crm/promoter-space/action-plans"); const result = await response.json(); if (response.ok) setPlans(result.plans); }, []);
+  useEffect(() => { const timer = window.setTimeout(() => void loadPlans(), 0); return () => window.clearTimeout(timer); }, [loadPlans]);
+  async function advance(id: string, status: string) { await fetch(`/api/crm/action-plans/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }); void loadPlans(); }
+
   if (loading && !data) return <div className="empty-core">Cargando…</div>;
   if (!data) return <div className="operational-empty"><strong>No pudimos cargar tu meta</strong><span>{message}</span></div>;
   const cumplimiento = data.goal && data.goal.targetValue > 0 ? Math.round((data.goal.achieved / data.goal.targetValue) * 1000) / 10 : null;
@@ -164,6 +173,9 @@ export function PromoterGoalsWorkspace() {
       <div className="promoter-goal-bar"><i style={{ width: `${Math.min(100, cumplimiento ?? 0)}%` }} /></div>
       <p style={{ fontSize: 9, color: "#8b90a1", marginTop: 10 }}>Período: {new Date(data.goal.periodStart).toLocaleDateString("es-PE")} – {new Date(data.goal.periodEnd).toLocaleDateString("es-PE")}</p>
     </> : <p className="promoter-empty-note" style={{ padding: 20 }}>Todavía no tienes una meta asignada.</p>}</section>
+    <section className="card"><div className="card-head"><div><h2>Mis planes de acción</h2></div></div>
+      {!plans ? <p className="promoter-empty-note" style={{ padding: 20 }}>Cargando…</p> : plans.length === 0 ? <p className="promoter-empty-note" style={{ padding: 20 }}>Tu supervisor no te ha asignado planes de acción.</p> : <div className="promoter-followup-list wide-list">{plans.map((p) => <div key={p.id} className="promoter-followup-row"><div className="grow"><strong>{p.title}</strong><small>{p.problemDescription}</small></div><span className={`crm-state ${p.status.toLowerCase()}`}>{p.status}</span>{p.status !== "COMPLETED" && p.status !== "CANCELLED" && <div className="user-actions"><button className="secondary" onClick={() => void advance(p.id, "IN_PROGRESS")}>En progreso</button><button className="secondary" onClick={() => void advance(p.id, "COMPLETED")}>Completar</button></div>}</div>)}</div>}
+    </section>
   </>;
 }
 
@@ -183,7 +195,7 @@ export function PromoterProfileWorkspace() {
   </>;
 }
 
-function NewSaleModal({ meta, storeName, close, onCreated }: { meta: Meta; storeName: string | null; close: () => void; onCreated: () => void }) {
+export function NewSaleModal({ meta, storeName, close, onCreated }: { meta: Meta; storeName: string | null; close: () => void; onCreated: () => void }) {
   const [search, setSearch] = useState(""); const [matches, setMatches] = useState<CustomerMatch[] | null>(null);
   const [customerId, setCustomerId] = useState<string | null>(null); const [customerLabel, setCustomerLabel] = useState("");
   const [name, setName] = useState(""), [document, setDocument] = useState(""), [phone, setPhone] = useState("");

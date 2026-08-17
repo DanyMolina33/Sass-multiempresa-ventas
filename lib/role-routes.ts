@@ -3,5 +3,6 @@
 export function roleLandingPath(role: string) {
   if (role === "SUPER_ADMIN") return "/";
   if (role === "AGENT") return "/crm/promoter-space";
+  if (role === "SUPERVISOR") return "/crm/supervisor-space";
   return "/empresa";
 }

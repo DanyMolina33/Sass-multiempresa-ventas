@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { hasPermission, isSuperAdmin, requireSession, tenantScope } from "@/lib/auth";
+import { isCompanyAdmin, isSuperAdmin, requireSession, tenantScope } from "@/lib/auth";
 import { generateUniqueAccessCode } from "@/lib/access-code";
 import { getPrisma } from "@/lib/prisma";
 
@@ -8,7 +8,7 @@ import { getPrisma } from "@/lib/prisma";
 export async function POST(request: Request, { params }: { params: Promise<{ userId: string }> }) {
   try {
     const session = await requireSession();
-    if (!hasPermission(session, "users.manage") && !isSuperAdmin(session)) throw new Response("Sin permiso para gestionar accesos", { status: 403 });
+    if (!isCompanyAdmin(session) && !isSuperAdmin(session)) throw new Response("Sin permiso para gestionar accesos", { status: 403 });
     const { userId } = await params;
     const body = await request.json().catch(() => ({})) as { tenantId?: string };
     const target = await getPrisma().user.findUnique({ where: { id: userId }, select: { tenantId: true } });

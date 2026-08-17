@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hash } from "bcryptjs";
-import { hasPermission, isSuperAdmin, requireSession, tenantScope } from "@/lib/auth";
+import { isCompanyAdmin, isSuperAdmin, requireSession, tenantScope } from "@/lib/auth";
 import { getPrisma } from "@/lib/prisma";
 
 // A supervisor assignment is only meaningful for AGENT users, and must stay inside the same tenant: an inactive or
@@ -17,7 +17,7 @@ async function resolveSupervisor(tenantId: string, roleCode: string, supervisorI
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ userId: string }> }) {
   try {
     const session = await requireSession();
-    if (!hasPermission(session, "users.manage") && !isSuperAdmin(session)) throw new Response("Sin permiso para editar usuarios", { status: 403 });
+    if (!isCompanyAdmin(session) && !isSuperAdmin(session)) throw new Response("Sin permiso para editar usuarios", { status: 403 });
     const { userId } = await params;
     const body = await request.json() as { name?: string; email?: string; roleId?: string; supervisorId?: string | null; status?: "ACTIVE" | "INACTIVE"; password?: string; tenantId?: string };
     const target = await getPrisma().user.findUnique({ where: { id: userId }, include: { role: true } });
@@ -55,8 +55,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const roleChanged = role.id !== target.roleId;
     const user = await getPrisma().user.update({
       where: { id: userId },
-      data: { name: body.name?.trim(), email, roleId: body.roleId ? role.id : undefined, supervisorId, status: body.status, passwordHash },
-      select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, role: { select: { id: true, code: true, name: true } } },
+      // A Gerente-initiated password reset always forces a change on next login (section 63); mustChangePassword
+      // is left untouched otherwise.
+      data: { name: body.name?.trim(), email, roleId: body.roleId ? role.id : undefined, supervisorId, status: body.status, passwordHash, mustChangePassword: passwordHash ? true : undefined },
+      select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, mustChangePassword: true, role: { select: { id: true, code: true, name: true } } },
     });
     // Sessions carry the role/permissions snapshot from login, and a temp password is worthless if the old one still
     // works — invalidate on any of the three so the next request re-authenticates with the new state.

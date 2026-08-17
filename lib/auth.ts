@@ -79,6 +79,13 @@ export function isSuperAdmin(session: NonNullable<Awaited<ReturnType<typeof getS
   return session.user.role.code === "SUPER_ADMIN";
 }
 
+// User/credential/module-grant administration is COMPANY_ADMIN-only by explicit product rule (Supervisor Portal
+// block, sections 9/65) — enforced by role code directly rather than solely through hasPermission("users.manage"),
+// since RolePermission rows can drift (a SUPERVISOR role was found with a stale users.manage grant in the live DB).
+export function isCompanyAdmin(session: NonNullable<Awaited<ReturnType<typeof getSession>>>) {
+  return session.user.role.code === "COMPANY_ADMIN";
+}
+
 export function tenantScope(session: NonNullable<Awaited<ReturnType<typeof getSession>>>, requestedTenantId?: string | null) {
   if (isSuperAdmin(session)) {
     if (!requestedTenantId) throw new Response("tenantId es obligatorio para esta operación global", { status: 400 });
@@ -89,10 +96,10 @@ export function tenantScope(session: NonNullable<Awaited<ReturnType<typeof getSe
   return session.user.tenantId;
 }
 
-export type SafeSession = { user: { id: string; name: string; email: string; tenantId: string | null; role: string; tenantName: string | null; permissions: string[]; activeModules: string[]; branding: { displayName: string; logoUrl: string | null; logoDarkUrl: string | null; primaryColor: string | null; secondaryColor: string | null; subdomain: string | null } | null } };
+export type SafeSession = { user: { id: string; name: string; email: string; tenantId: string | null; role: string; tenantName: string | null; permissions: string[]; activeModules: string[]; mustChangePassword: boolean; branding: { displayName: string; logoUrl: string | null; logoDarkUrl: string | null; primaryColor: string | null; secondaryColor: string | null; subdomain: string | null } | null } };
 export function safeSession(session: NonNullable<Awaited<ReturnType<typeof getSession>>>): SafeSession {
   const branding = session.user.tenant?.branding;
-  return { user: { id: session.user.id, name: session.user.name, email: session.user.email, tenantId: session.user.tenantId, role: session.user.role.code, tenantName: session.user.tenant?.name ?? null, permissions: session.user.role.permissions.map((item) => item.permission.code), activeModules: session.user.tenant?.modules.filter((item) => item.enabled).map((item) => item.module.code) ?? [], branding: branding ? { displayName: branding.displayName, logoUrl: branding.logoUrl, logoDarkUrl: branding.logoDarkUrl, primaryColor: branding.primaryColor, secondaryColor: branding.secondaryColor, subdomain: branding.subdomain } : null } };
+  return { user: { id: session.user.id, name: session.user.name, email: session.user.email, tenantId: session.user.tenantId, role: session.user.role.code, tenantName: session.user.tenant?.name ?? null, permissions: session.user.role.permissions.map((item) => item.permission.code), activeModules: session.user.tenant?.modules.filter((item) => item.enabled).map((item) => item.module.code) ?? [], mustChangePassword: session.user.mustChangePassword, branding: branding ? { displayName: branding.displayName, logoUrl: branding.logoUrl, logoDarkUrl: branding.logoDarkUrl, primaryColor: branding.primaryColor, secondaryColor: branding.secondaryColor, subdomain: branding.subdomain } : null } };
 }
 
 export function companyModuleEnabled(session: NonNullable<Awaited<ReturnType<typeof getSession>>>, moduleCode: string) { return session.user.tenant?.modules.some((item) => item.enabled && item.module.code === moduleCode) ?? false; }

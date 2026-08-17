@@ -48,6 +48,9 @@ async function main() {
     ["tenant.read", "Ver empresa propia"], ["users.read", "Ver usuarios"], ["users.manage", "Administrar usuarios"],
     ["modules.read", "Consultar módulos"], ["reports.read", "Consultar reportes"], ["guardian.read", "Ver Guardian"],
     ["operations.basic", "Acceso operativo básico"],
+    // Section 65 of the Supervisor Portal block: credential operations (reset password / regenerate access link)
+    // are COMPANY_ADMIN-only — a narrower permission than the general users.manage, never granted to SUPERVISOR.
+    ["users.credentials.reset", "Restablecer credenciales de usuarios"],
   ] as const;
   const permissionIds = new Map<string, string>();
   for (const [code, name] of permissions) {
@@ -157,8 +160,10 @@ async function main() {
     });
   }
   const ycRoles = [
-    { id: "role-yc-company-admin", code: "COMPANY_ADMIN", name: "Administrador de empresa", permissions: ["tenant.read", "users.read", "users.manage", "modules.read"] },
-    { id: "role-yc-supervisor", code: "SUPERVISOR", name: "Supervisor", permissions: ["tenant.read", "users.read", "reports.read"] },
+    { id: "role-yc-company-admin", code: "COMPANY_ADMIN", name: "Administrador de empresa", permissions: ["tenant.read", "users.read", "users.manage", "users.credentials.reset", "modules.read"] },
+    // SUPERVISOR never gets users.read/users.manage (section 9/65) — user/credential/module-grant administration
+    // is COMPANY_ADMIN-only. Fixed here after finding this role had drifted to include them in the live DB.
+    { id: "role-yc-supervisor", code: "SUPERVISOR", name: "Supervisor", permissions: ["tenant.read", "reports.read"] },
     { id: "role-yc-agent", code: "AGENT", name: "Promotor", permissions: ["tenant.read", "operations.basic"] },
   ];
   for (const roleData of ycRoles) {

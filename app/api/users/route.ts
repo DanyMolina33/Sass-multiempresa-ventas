@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hash } from "bcryptjs";
-import { hasPermission, isSuperAdmin, requireSession, tenantScope } from "@/lib/auth";
+import { isCompanyAdmin, isSuperAdmin, requireSession, tenantScope } from "@/lib/auth";
 import { generateUniqueAccessCode } from "@/lib/access-code";
 import { getPrisma } from "@/lib/prisma";
 
@@ -32,22 +32,22 @@ async function resolveSupervisor(tenantId: string, roleCode: string, supervisorI
 export async function GET(request: NextRequest) {
   try {
     const session = await requireSession();
-    if (!hasPermission(session, "users.read") && !hasPermission(session, "users.manage") && !isSuperAdmin(session)) throw new Response("Sin permiso para ver usuarios", { status: 403 });
+    if (!isCompanyAdmin(session) && !isSuperAdmin(session)) throw new Response("Sin permiso para ver usuarios", { status: 403 });
     const tenantId = tenantScope(session, request.nextUrl.searchParams.get("tenantId"));
     const includeInactive = request.nextUrl.searchParams.get("includeInactive") === "1";
     const [users, roles, limit, activeCount] = await Promise.all([
-      getPrisma().user.findMany({ where: { tenantId, ...(includeInactive ? {} : { status: "ACTIVE" }) }, select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, createdAt: true, role: { select: { id: true, code: true, name: true } } }, orderBy: { name: "asc" } }),
+      getPrisma().user.findMany({ where: { tenantId, ...(includeInactive ? {} : { status: "ACTIVE" }) }, select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, mustChangePassword: true, createdAt: true, role: { select: { id: true, code: true, name: true } } }, orderBy: { name: "asc" } }),
       getPrisma().role.findMany({ where: { tenantId }, select: { id: true, code: true, name: true }, orderBy: { name: "asc" } }),
       userLimit(tenantId), getPrisma().user.count({ where: { tenantId, status: "ACTIVE" } }),
     ]);
-    return NextResponse.json({ users, roles, limit, activeCount, canManage: hasPermission(session, "users.manage") || isSuperAdmin(session) });
+    return NextResponse.json({ users, roles, limit, activeCount, canManage: isCompanyAdmin(session) || isSuperAdmin(session) });
   } catch (error) { return await errorResponse(error); }
 }
 
 export async function POST(request: NextRequest) {
   try {
     const session = await requireSession();
-    if (!hasPermission(session, "users.manage") && !isSuperAdmin(session)) throw new Response("Sin permiso para crear usuarios", { status: 403 });
+    if (!isCompanyAdmin(session) && !isSuperAdmin(session)) throw new Response("Sin permiso para crear usuarios", { status: 403 });
     const body = await request.json() as { name?: string; email?: string; password?: string; roleId?: string; tenantId?: string; supervisorId?: string | null };
     const tenantId = tenantScope(session, body.tenantId);
     if (!body.name?.trim() || !body.email?.trim() || !body.password || !body.roleId) return NextResponse.json({ message: "Nombre, correo, contraseña y rol son obligatorios." }, { status: 400 });
@@ -58,7 +58,12 @@ export async function POST(request: NextRequest) {
     if (emailTaken) return NextResponse.json({ message: "Ya existe un usuario con este correo." }, { status: 409 });
     const supervisorId = await resolveSupervisor(tenantId, role.code, body.supervisorId);
     const accessCode = await generateUniqueAccessCode();
-    const user = await getPrisma().user.create({ data: { name: body.name.trim(), email: body.email.trim().toLowerCase(), passwordHash: await hash(body.password, 12), tenantId, roleId: role.id, supervisorId, accessCode }, select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, role: { select: { id: true, code: true, name: true } } } });
+    // A temporary password set by the Gerente always forces a change on first login (section 59).
+    const user = await getPrisma().user.create({ data: { name: body.name.trim(), email: body.email.trim().toLowerCase(), passwordHash: await hash(body.password, 12), tenantId, roleId: role.id, supervisorId, accessCode, mustChangePassword: true }, select: { id: true, name: true, email: true, jobTitle: true, status: true, supervisorId: true, accessCode: true, mustChangePassword: true, role: { select: { id: true, code: true, name: true } } } });
+    if (role.code === "SUPERVISOR" || role.code === "AGENT") {
+      const tenantModules = await getPrisma().tenantModule.findMany({ where: { tenantId, enabled: true }, select: { moduleId: true } });
+      if (tenantModules.length) await getPrisma().userModuleGrant.createMany({ data: tenantModules.map((tm) => ({ tenantId, userId: user.id, moduleId: tm.moduleId, enabled: true, grantedByUserId: session.user.id })) });
+    }
     return NextResponse.json({ user }, { status: 201 });
   } catch (error) { return await errorResponse(error); }
 }

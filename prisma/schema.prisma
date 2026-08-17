@@ -50,6 +50,9 @@ model Tenant {
   payrollPeriods              PayrollPeriod[]
   payrollEntries              PayrollEntry[]
   stores                      Store[]
+  moduleGrants                UserModuleGrant[]
+  internalMessages            InternalMessage[]
+  actionPlans                 ActionPlan[]
   createdAt                   DateTime                     @default(now())
   updatedAt                   DateTime                     @updatedAt
 
@@ -146,6 +149,7 @@ model Module {
   description String?
   status      RecordStatus   @default(ACTIVE)
   tenants     TenantModule[]
+  userGrants  UserModuleGrant[]
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 }
@@ -219,6 +223,12 @@ model User {
   supervisorId                   String?
   jobTitle                       String?
   accessCode                     String?                   @unique
+  mustChangePassword             Boolean                   @default(false)
+  moduleGrants                   UserModuleGrant[]
+  sentMessages                   InternalMessage[]         @relation("MessageSender")
+  receivedMessages               InternalMessageRecipient[]
+  assignedActionPlans            ActionPlan[]               @relation("ActionPlanAssignee")
+  createdActionPlans             ActionPlan[]               @relation("ActionPlanCreatedBy")
   supervisor                     User?                     @relation("CommercialHierarchy", fields: [supervisorId], references: [id], onDelete: SetNull)
   supervisedAgents               User[]                    @relation("CommercialHierarchy")
   assignedLeads                  Lead[]                    @relation("LeadAssignee")
@@ -242,6 +252,26 @@ model User {
   @@index([tenantId, status])
   @@index([roleId])
   @@index([tenantId, supervisorId])
+}
+
+// A user's real-time entitlement to a module = tenantModule.enabled (Nivel 2, SUPER_ADMIN) AND this row's
+// enabled=true (Nivel 3, granted by COMPANY_ADMIN). Missing row = no effective access — COMPANY_ADMIN/SUPER_ADMIN
+// bypass this table entirely (see lib/module-entitlement.ts) since they are the entitlement administrators, not consumers.
+model UserModuleGrant {
+  id              String   @id @default(cuid())
+  tenantId        String
+  userId          String
+  moduleId        String
+  enabled         Boolean  @default(false)
+  grantedByUserId String?
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module          Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, moduleId])
+  @@index([tenantId, userId])
 }
 
 model Lead {
@@ -830,6 +860,9 @@ model Employee {
   userId              String?            @unique
   pensionRegimeRateId String?
   storeId             String?
+  // Minimal additive field for section 14 of the Supervisor Portal block ("identidad comercial propia") — generated
+  // once on first use by lib/commercial-code.ts, never hardcoded, unique per tenant.
+  commercialCode      String?
   tenant              Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   jobPosition         JobPosition        @relation(fields: [jobPositionId], references: [id])
   compensationPlan    CompensationPlan   @relation(fields: [compensationPlanId], references: [id])
@@ -837,6 +870,7 @@ model Employee {
   pensionRegimeRate   PensionRegimeRate? @relation(fields: [pensionRegimeRateId], references: [id], onDelete: SetNull)
   store               Store?             @relation(fields: [storeId], references: [id], onDelete: SetNull)
   payrollEntries      PayrollEntry[]
+  actionPlans         ActionPlan[]
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
 
@@ -844,6 +878,7 @@ model Employee {
   @@index([tenantId, jobPositionId])
   @@index([tenantId, compensationPlanId])
   @@index([tenantId, storeId])
+  @@unique([tenantId, commercialCode])
 }
 
 model Store {
@@ -855,6 +890,7 @@ model Store {
   tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   employees Employee[]
   sales     Sale[]
+  actionPlans ActionPlan[]
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
@@ -1143,24 +1179,164 @@ enum GoalStatus {
 }
 
 model CommercialGoal {
-  id           String        @id @default(cuid())
-  tenantId     String
-  code         String
-  name         String
-  description  String?
-  metric       GoalMetric
-  scopeType    GoalScopeType
-  targetValue  Decimal       @db.Decimal(12, 2)
-  periodStart  DateTime
-  periodEnd    DateTime
-  status       GoalStatus    @default(DRAFT)
-  parentGoalId String?
-  storeId      String?
-  employeeId   String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id                String        @id @default(cuid())
+  tenantId          String
+  code              String
+  name              String
+  description       String?
+  metric            GoalMetric
+  scopeType         GoalScopeType
+  targetValue       Decimal       @db.Decimal(12, 2)
+  periodStart       DateTime
+  periodEnd         DateTime
+  status            GoalStatus    @default(DRAFT)
+  parentGoalId      String?
+  commercialZoneId  String?
+  commercialUnitId  String?
+  storeId           String?
+  employeeId        String?
+  productId         String?
+  // NOT NULL in the live table — omitted from the original read-only partial model (Promoter Portal V1 never wrote
+  // here). Required now that the Supervisor Portal block creates goals via this model.
+  createdByUserId   String
+  updatedByUserId   String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
   @@unique([tenantId, code])
   @@index([tenantId, employeeId])
   @@index([tenantId, status])
+}
+
+// ActionPlan already exists in the database (migration 20260722224500_action_plans_block1, outside this working
+// tree's history — same drift documented for CommercialGoal). Modeled here with real relations to User/Employee/Store
+// (all already defined in this schema); commercialZoneId/commercialUnitId stay scalar-only since CommercialZone/
+// CommercialUnit aren't otherwise modeled here. Table had 0 rows before the Supervisor Portal block first used it.
+enum ActionPlanOrigin {
+  MANUAL
+  PERFORMANCE_ALERT
+}
+
+enum ActionPlanPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ActionPlanStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum ActionPlanScopeType {
+  TENANT
+  ZONE
+  UNIT
+  STORE
+  EMPLOYEE
+}
+
+model ActionPlan {
+  id                 String              @id @default(cuid())
+  tenantId           String
+  code               String
+  title              String
+  problemDescription String
+  actionDescription  String
+  origin             ActionPlanOrigin    @default(MANUAL)
+  priority           ActionPlanPriority  @default(MEDIUM)
+  status             ActionPlanStatus    @default(OPEN)
+  scopeType          ActionPlanScopeType
+  commercialZoneId   String?
+  commercialUnitId   String?
+  storeId            String?
+  employeeId         String?
+  assignedUserId     String?
+  createdByUserId    String
+  dueAt              DateTime?
+  completedAt        DateTime?
+  outcome            String?
+  sourceAlertKey     String?
+  sourcePeriodStart  DateTime?
+  sourcePeriodEnd    DateTime?
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  store              Store?              @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  employee           Employee?           @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  assignedUser        User?              @relation("ActionPlanAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  createdByUser       User               @relation("ActionPlanCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@index([tenantId, assignedUserId])
+  @@index([tenantId, employeeId])
+}
+
+// MentoriFY Internal Messaging (section 35 of the Supervisor Portal block) — one engine covers both individual/team
+// messages and time-boxed campaigns (`kind` distinguishes them) rather than two parallel systems.
+enum InternalMessageKind {
+  MESSAGE
+  CAMPAIGN
+}
+
+enum InternalMessageType {
+  MOTIVATIONAL
+  INFORMATIVE
+  RECOGNITION
+  URGENT
+}
+
+enum InternalMessageCta {
+  NONE
+  GOAL
+  RANKING
+  SALE
+}
+
+enum InternalMessageStatus {
+  DRAFT
+  SCHEDULED
+  ACTIVE
+  FINISHED
+  CANCELLED
+}
+
+model InternalMessage {
+  id         String                 @id @default(cuid())
+  tenantId   String
+  fromUserId String
+  kind       InternalMessageKind    @default(MESSAGE)
+  type       InternalMessageType    @default(INFORMATIVE)
+  title      String
+  body       String
+  cta        InternalMessageCta     @default(NONE)
+  status     InternalMessageStatus  @default(ACTIVE)
+  startAt    DateTime               @default(now())
+  endAt      DateTime?
+  tenant     Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fromUser   User                   @relation("MessageSender", fields: [fromUserId], references: [id])
+  recipients InternalMessageRecipient[]
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+
+  @@index([tenantId, fromUserId])
+  @@index([tenantId, status])
+}
+
+model InternalMessageRecipient {
+  id        String          @id @default(cuid())
+  tenantId  String
+  messageId String
+  userId    String
+  readAt    DateTime?
+  message   InternalMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime        @default(now())
+
+  @@unique([messageId, userId])
+  @@index([tenantId, userId, readAt])
 }

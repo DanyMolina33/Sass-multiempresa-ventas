@@ -14,6 +14,7 @@ import { PayrollWorkspace } from "@/components/payroll-workspace";
 import { ExecutiveDashboard } from "@/components/executive-dashboard";
 import { CommercialManagementWorkspace } from "@/components/commercial-management-workspace";
 import { PromoterSpaceWorkspace, PromoterFollowUpsWorkspace, PromoterRankingWorkspace, PromoterCommissionsWorkspace, PromoterAgendaWorkspace, PromoterGoalsWorkspace, PromoterProfileWorkspace } from "@/components/promoter-space-workspace";
+import { SupervisorSpaceWorkspace, SupervisorTeamWorkspace, SupervisorGoalsWorkspace, SupervisorRankingWorkspace, SupervisorPerformanceWorkspace, SupervisorMessagesWorkspace, SupervisorActionPlansWorkspace, SupervisorFollowUpsWorkspace, SupervisorAgendaWorkspace, SupervisorAlertsWorkspace, SupervisorProfileWorkspace } from "@/components/supervisor-space-workspace";
 
 type CoreLimit = { value: number; definition: { id: string; code: string; name: string; unit: string } };
 type CorePlan = { id: string; name: string; code: string; limits: CoreLimit[] };
@@ -41,13 +42,33 @@ const AGENT_NAV: Array<[string, { label: string; icon: string; href: string }]> 
   ["promoter-profile", { label: "Mi perfil", icon: "☺", href: "/crm/promoter-profile" }],
 ];
 
+// Section 21/22: Supervisor gets its own minimal nav — never Usuarios/Accesos/Configuración/Finanzas/Liquidaciones
+// globales/Panel Maestro, same treatment as AGENT_NAV above.
+const SUPERVISOR_NAV: Array<[string, { label: string; icon: string; href: string }]> = [
+  ["supervisor-space", { label: "Inicio", icon: "☀", href: "/crm/supervisor-space" }],
+  ["supervisor-team", { label: "Mi equipo", icon: "◉", href: "/crm/supervisor-team" }],
+  ["supervisor-goals", { label: "Metas", icon: "◎", href: "/crm/supervisor-goals" }],
+  ["supervisor-ranking", { label: "Ranking", icon: "♛", href: "/crm/supervisor-ranking" }],
+  ["supervisor-performance", { label: "Rendimiento", icon: "▲", href: "/crm/supervisor-performance" }],
+  ["team-sales", { label: "Ventas del equipo", icon: "◈", href: "/crm/sales?scope=team" }],
+  ["self-sales", { label: "Mis ventas", icon: "◈", href: "/crm/sales?scope=self" }],
+  ["team-customers", { label: "Clientes del equipo", icon: "◑", href: "/crm/customers?scope=team" }],
+  ["supervisor-followups", { label: "Seguimientos", icon: "◷", href: "/crm/supervisor-followups" }],
+  ["supervisor-messages", { label: "Mensajes", icon: "✉", href: "/crm/supervisor-messages" }],
+  ["supervisor-action-plans", { label: "Planes de acción", icon: "▦", href: "/crm/supervisor-action-plans" }],
+  ["supervisor-agenda", { label: "Agenda", icon: "▤", href: "/crm/supervisor-agenda" }],
+  ["supervisor-alerts", { label: "Alertas", icon: "◈", href: "/crm/supervisor-alerts" }],
+  ["supervisor-profile", { label: "Mi perfil", icon: "☺", href: "/crm/supervisor-profile" }],
+];
+
 function Sidebar({ section, crmView, open, close, session, companyMode }: { section: SectionKey; crmView?: string; open: boolean; close: () => void; session: SafeSession; companyMode: boolean }) {
   const isAgent = companyMode && session.user.role === "AGENT";
-  // A Promotor never sees the administrative sidebar (Usuarios, Configuración, Liquidaciones, etc.) — just a
-  // minimal self-service nav. Everyone else keeps the standard module-driven sidebar.
-  const canSeeUsers = session.user.role === "SUPER_ADMIN" || session.user.permissions.includes("users.read") || session.user.permissions.includes("users.manage");
+  const isSupervisor = companyMode && session.user.role === "SUPERVISOR";
+  // A Promotor/Supervisor never sees the administrative sidebar (Usuarios, Configuración, Liquidaciones, etc.) —
+  // just a minimal self-service nav. Everyone else keeps the standard module-driven sidebar.
+  const canSeeUsers = session.user.role === "SUPER_ADMIN" || session.user.role === "COMPANY_ADMIN";
   const alwaysForCompany = canSeeUsers ? ["dashboard", "usuarios"] : ["dashboard"];
-  const navItems = isAgent ? AGENT_NAV : Object.entries(sections).filter(([key]) => !companyMode || alwaysForCompany.includes(key) || session.user.activeModules.includes(key));
+  const navItems = isAgent ? AGENT_NAV : isSupervisor ? SUPERVISOR_NAV : Object.entries(sections).filter(([key]) => !companyMode || alwaysForCompany.includes(key) || session.user.activeModules.includes(key));
   const brandName=companyMode?(session.user.branding?.displayName??session.user.tenantName??"Empresa"):"MentoriFY";
   const brandInitials=brandName.split(/\s+/).map(part=>part[0]).join("").slice(0,2).toUpperCase();
   return <>
@@ -57,7 +78,7 @@ function Sidebar({ section, crmView, open, close, session, companyMode }: { sect
       <div className="workspace"><span>MC</span><div><small>Espacio de trabajo</small><strong>{companyMode ? session.user.tenantName : "Panel Maestro"}</strong></div><b>⌄</b></div>
       <nav aria-label="Navegación principal">
         <p>PLATAFORMA</p>
-        {navItems.map(([key, item]) => <Link key={key} href={companyMode && key === "dashboard" ? "/empresa" : item.href} onClick={close} className={(isAgent ? crmView === key : section === key) ? "active" : ""}><span>{item.icon}</span>{item.label}{key === "guardian" && <em />}</Link>)}
+        {navItems.map(([key, item]) => <Link key={key} href={companyMode && key === "dashboard" ? "/empresa" : item.href} onClick={close} className={((isAgent || isSupervisor) ? crmView === key : section === key) ? "active" : ""}><span>{item.icon}</span>{item.label}{key === "guardian" && <em />}</Link>)}
       </nav>
       <div className="sidebar-footer"><div className="avatar">{session.user.name.split(" ").map(part => part[0]).join("").slice(0,2)}</div><div><strong>{session.user.name}</strong><small>{session.user.email}</small></div><button aria-label="Cerrar sesión" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }); window.location.href = companyMode&&session.user.branding?.subdomain?`/t/${session.user.branding.subdomain}/login`:"/login"; }}>↪</button></div>
     </aside>
@@ -347,7 +368,39 @@ function EditUserModal({ user, tenantId, availableRoles, users, close, onSaved }
       {message && <p className="form-error">{message}</p>}
       <button className="primary" disabled={saving}>{saving ? "Guardando…" : "Guardar cambios"}</button>
     </form>
+    {(selectedRole.code === "SUPERVISOR" || selectedRole.code === "AGENT") && <ModuleGrantsEditor userId={user.id} tenantId={tenantId} />}
   </aside></div>;
+}
+
+type ModuleGrantRow = { id: string; code: string; name: string; tenantEnabled: boolean; granted: boolean };
+// Section 8/80: only modules the tenant itself has contracted can be granted — locked rows are shown, never hidden,
+// so the Gerente understands why a toggle is unavailable instead of assuming it's missing.
+function ModuleGrantsEditor({ userId, tenantId }: { userId: string; tenantId?: string }) {
+  const [modules, setModules] = useState<ModuleGrantRow[] | null>(null);
+  const [message, setMessage] = useState("");
+  const load = useCallback(async () => {
+    const query = tenantId ? `?tenantId=${tenantId}` : "";
+    const response = await fetch(`/api/users/${userId}/modules${query}`);
+    const result = await response.json();
+    if (response.ok) setModules(result.modules); else setMessage(result.message);
+  }, [userId, tenantId]);
+  useEffect(() => { const timer = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(timer); }, [load]);
+
+  async function toggle(moduleId: string, enabled: boolean) {
+    const response = await fetch(`/api/users/${userId}/modules`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ moduleId, enabled, tenantId }) });
+    const result = await response.json();
+    if (!response.ok) return setMessage(result.message);
+    void load();
+  }
+
+  return <div className="detail-section"><h3>Módulos habilitados</h3>
+    {message && <p className="form-error">{message}</p>}
+    {!modules ? <p className="promoter-empty-note">Cargando…</p> : <div className="module-grant-list">{modules.map((m) => <label key={m.id} className={`module-grant-row${!m.tenantEnabled ? " locked" : ""}`}>
+      <input type="checkbox" disabled={!m.tenantEnabled} checked={m.granted} onChange={(e) => void toggle(m.id, e.target.checked)} />
+      <span className="grow">{m.name}</span>
+      <small>{m.tenantEnabled ? "Habilitado por tu plan" : "No disponible para tu empresa"}</small>
+    </label>)}</div>}
+  </div>;
 }
 
 function AccessModal({ user, tenantId, close, onReset }: { user: ManagedUser; tenantId?: string; close: () => void; onReset: (access: CreatedAccess) => void }) {
@@ -451,7 +504,7 @@ function ModulePlaceholder({ section }: { section: SectionKey }) {
   return <><section className="page-title"><div><span className="eyebrow">MÓDULO {content.active ? "DISPONIBLE" : "PREPARADO"}</span><h1>{content.title}</h1><p>{content.description}</p></div><span className={`availability ${content.active ? "enabled" : ""}`}>{content.active ? "Activo en Clínica Demo" : "En construcción"}</span></section><section className="placeholder card"><div className="placeholder-mark">{sections[section].icon}</div><h2>Base modular lista</h2><p>Este espacio ya forma parte de la arquitectura multiempresa. La lógica profunda y las integraciones se incorporarán en una siguiente fase.</p><div className="feature-list">{content.features.map((f,i) => <div key={f}><span>{i+1}</span><strong>{f}</strong><small>{i < 2 ? "Estructura preparada" : "Próxima fase"}</small></div>)}</div><div className="safe-note"><span>i</span><p><strong>Sin integraciones externas</strong><br/>Esta entrega no conecta proveedores ni modifica servicios reales.</p></div></section></>;
 }
 
-export function DashboardShell({ section, session, companyMode = false, crmView, adminCrmTenant = null, crmContextMissing = false }: { section: SectionKey; session: SafeSession; companyMode?: boolean; crmView?: "leads"|"customers"|"sales"|"follow-ups"|"products"|"commercial-plans"|"commissions"|"reconciliation"|"finance"|"payroll"|"commercial-management"|"promoter-space"|"promoter-followups"|"promoter-ranking"|"promoter-commissions"|"promoter-agenda"|"promoter-goals"|"promoter-profile"; adminCrmTenant?: {id:string;name:string}|null; crmContextMissing?: boolean }) {
+export function DashboardShell({ section, session, companyMode = false, crmView, adminCrmTenant = null, crmContextMissing = false }: { section: SectionKey; session: SafeSession; companyMode?: boolean; crmView?: "leads"|"customers"|"sales"|"follow-ups"|"products"|"commercial-plans"|"commissions"|"reconciliation"|"finance"|"payroll"|"commercial-management"|"promoter-space"|"promoter-followups"|"promoter-ranking"|"promoter-commissions"|"promoter-agenda"|"promoter-goals"|"promoter-profile"|"supervisor-space"|"supervisor-team"|"supervisor-goals"|"supervisor-ranking"|"supervisor-performance"|"supervisor-messages"|"supervisor-action-plans"|"supervisor-followups"|"supervisor-agenda"|"supervisor-alerts"|"supervisor-profile"; adminCrmTenant?: {id:string;name:string}|null; crmContextMissing?: boolean }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [tenants, setTenants] = useState<CoreTenant[]>([]);
   const [plans, setPlans] = useState<CorePlan[]>([]);
@@ -462,6 +515,6 @@ export function DashboardShell({ section, session, companyMode = false, crmView,
   useEffect(() => { const timer = window.setTimeout(() => void loadCore(), 0); return () => window.clearTimeout(timer); }, [loadCore]);
   const selected = tenants.find(tenant => tenant.id === selectedId) ?? (companyMode ? tenants[0] : undefined);
   async function selectTenant(tenantId:string){if(companyMode){setSelectedId(tenantId);return}const response=await fetch("/api/auth/tenant-context",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tenantId:tenantId||null})});const result=await response.json();if(!response.ok){setCoreError(result.message);return}setSelectedId(result.tenant?.id??"");setCoreError("");if(section==="crm")window.location.href="/crm/leads"}
-  const crmContent=crmContextMissing?<section className="card crm-context-empty"><span>◎</span><h2>Selecciona una empresa para acceder al CRM.</h2><p>Usa el selector “Empresa seleccionada” en la parte superior. El contexto será validado antes de abrir los datos comerciales.</p></section>:crmView==="commissions"?<EconomicRulesWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="reconciliation"?<ReconciliationWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="finance"?<FinanceWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="payroll"?<PayrollWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="commercial-management"?<CommercialManagementWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="promoter-space"?<PromoterSpaceWorkspace/>:crmView==="promoter-followups"?<PromoterFollowUpsWorkspace/>:crmView==="promoter-ranking"?<PromoterRankingWorkspace/>:crmView==="promoter-commissions"?<PromoterCommissionsWorkspace/>:crmView==="promoter-agenda"?<PromoterAgendaWorkspace/>:crmView==="promoter-goals"?<PromoterGoalsWorkspace/>:crmView==="promoter-profile"?<PromoterProfileWorkspace/>:crmView==="sales"||crmView==="customers"?<CrmOperationalWorkspace view={crmView} administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView?<CrmWorkspace view={crmView} administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:<section className="card crm-context-empty"><span>◇</span><h2>No hay funciones CRM activas para esta organización.</h2><p>Un administrador puede habilitarlas desde Plantilla y Funciones CRM.</p></section>;
+  const crmContent=crmContextMissing?<section className="card crm-context-empty"><span>◎</span><h2>Selecciona una empresa para acceder al CRM.</h2><p>Usa el selector “Empresa seleccionada” en la parte superior. El contexto será validado antes de abrir los datos comerciales.</p></section>:crmView==="commissions"?<EconomicRulesWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="reconciliation"?<ReconciliationWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="finance"?<FinanceWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="payroll"?<PayrollWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="commercial-management"?<CommercialManagementWorkspace administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView==="promoter-space"?<PromoterSpaceWorkspace/>:crmView==="promoter-followups"?<PromoterFollowUpsWorkspace/>:crmView==="promoter-ranking"?<PromoterRankingWorkspace/>:crmView==="promoter-commissions"?<PromoterCommissionsWorkspace/>:crmView==="promoter-agenda"?<PromoterAgendaWorkspace/>:crmView==="promoter-goals"?<PromoterGoalsWorkspace/>:crmView==="promoter-profile"?<PromoterProfileWorkspace/>:crmView==="supervisor-space"?<SupervisorSpaceWorkspace/>:crmView==="supervisor-team"?<SupervisorTeamWorkspace/>:crmView==="supervisor-goals"?<SupervisorGoalsWorkspace/>:crmView==="supervisor-ranking"?<SupervisorRankingWorkspace/>:crmView==="supervisor-performance"?<SupervisorPerformanceWorkspace/>:crmView==="supervisor-messages"?<SupervisorMessagesWorkspace/>:crmView==="supervisor-action-plans"?<SupervisorActionPlansWorkspace/>:crmView==="supervisor-followups"?<SupervisorFollowUpsWorkspace/>:crmView==="supervisor-agenda"?<SupervisorAgendaWorkspace/>:crmView==="supervisor-alerts"?<SupervisorAlertsWorkspace/>:crmView==="supervisor-profile"?<SupervisorProfileWorkspace/>:crmView==="sales"||crmView==="customers"?<CrmOperationalWorkspace view={crmView} administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:crmView?<CrmWorkspace view={crmView} administrativeTenant={session.user.role==="SUPER_ADMIN"?adminCrmTenant?.name:null}/>:<section className="card crm-context-empty"><span>◇</span><h2>No hay funciones CRM activas para esta organización.</h2><p>Un administrador puede habilitarlas desde Plantilla y Funciones CRM.</p></section>;
   return <div className="app-shell"><Sidebar section={section} crmView={crmView} open={menuOpen} close={() => setMenuOpen(false)} session={session} companyMode={companyMode} /><main><header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menú">☰</button><div className="breadcrumb"><span>{companyMode ? session.user.branding?.displayName??session.user.tenantName : "Panel Maestro"}</span><b>/</b><strong>{sections[section].label}</strong></div><div className="top-actions"><button aria-label="Buscar">⌕</button><button className="notification" aria-label="Notificaciones">♢<i /></button><div className="tenant"><small>{companyMode ? "Organización" : "Empresa seleccionada"}</small><select value={selectedId} onChange={event => void selectTenant(event.target.value)} disabled={companyMode || !tenants.length} aria-label="Empresa seleccionada"><option value="">{loading ? "Cargando…" : coreError ? "Contexto no disponible" : "Selecciona una empresa"}</option>{tenants.map(tenant => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></div></div></header><div className="content">{section === "dashboard" ? <Dashboard tenant={selected} count={tenants.filter(tenant => tenant.status === "ACTIVE").length} coreError={coreError} companyMode={companyMode} session={session}/> : section === "empresas" ? <Companies tenants={tenants} plans={plans} selectedId={selected?.id ?? ""} loading={loading} error={coreError} onSelect={tenantId=>void selectTenant(tenantId)} reload={() => void loadCore()} canGlobal={session.user.role === "SUPER_ADMIN"}/> : section === "usuarios" ? <Users tenantId={session.user.role === "SUPER_ADMIN" ? selected?.id : undefined}/> : section === "crm" ? crmContent : section === "guardian" ? <Guardian/> : <ModulePlaceholder section={section}/>}</div><footer><span>{companyMode?(session.user.branding?.displayName??session.user.tenantName):"MentoriFY Enterprise Platform"}</span><span>{session.user.role} · {coreError ? "Core no disponible" : "Tenant aislado"}</span></footer></main></div>;
 }

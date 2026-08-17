@@ -49,6 +49,18 @@ export async function GET() { try {
 
   const ranking = await teamRanking(context.tenantId, context.userId, monthRange);
 
+  // Section 39/40: featured message from the Supervisor — the single most recent one addressed to this user that
+  // hasn't expired. Reading it here (Mi día load) is what marks it read, satisfying section 43's read tracking
+  // without a separate "mark as read" click the spec never asked for.
+  const now2 = new Date();
+  const recipientRow = await prisma.internalMessageRecipient.findFirst({
+    where: { tenantId: context.tenantId, userId: context.userId, message: { status: "ACTIVE", OR: [{ endAt: null }, { endAt: { gte: now2 } }] } },
+    include: { message: { include: { fromUser: { select: { name: true } } } } },
+    orderBy: { message: { createdAt: "desc" } },
+  });
+  if (recipientRow && !recipientRow.readAt) await prisma.internalMessageRecipient.update({ where: { id: recipientRow.id }, data: { readAt: now2 } });
+  const featuredMessage = recipientRow ? { id: recipientRow.message.id, title: recipientRow.message.title, body: recipientRow.message.body, type: recipientRow.message.type, fromName: recipientRow.message.fromUser.name, createdAt: recipientRow.message.createdAt } : null;
+
   const followUpsToday = await prisma.followUp.findMany({
     where: { tenantId: context.tenantId, assignedUserId: context.userId, scheduledAt: todayRange, status: "PENDING" },
     include: { customer: { select: { id: true, name: true, phone: true } } },
@@ -69,6 +81,7 @@ export async function GET() { try {
     today, period,
     commissions: { projected: commissionProjected, confirmed: commissionConfirmed },
     goal,
+    featuredMessage,
     ranking: { position: ranking.position, total: ranking.total, entries: ranking.entries.slice(0, 5) },
     followUpsToday: followUpsToday.map((item) => ({ id: item.id, scheduledAt: item.scheduledAt, type: item.type, notes: item.notes, customer: item.customer })),
     recentSales: recentSales.map((sale) => ({ id: sale.id, customerName: sale.customerNameSnapshot, productName: sale.productNameSnapshot, amount: sale.saleAmount ? Number(sale.saleAmount) : null, saleDate: sale.saleDate, status: sale.status })),
