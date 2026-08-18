@@ -16,6 +16,7 @@
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "prisma db seed",
+    "prod:setup-yc-access": "tsx scripts/setup-yc-production-access.ts",
     "verify:phase2a": "tsx scripts/verify-phase-2a.ts",
     "verify:phase2b": "tsx scripts/verify-phase-2b.ts",
     "verify:phase2c": "tsx scripts/verify-phase-2c.ts",
