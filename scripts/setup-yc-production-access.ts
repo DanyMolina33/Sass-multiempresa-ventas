@@ -2,41 +2,80 @@ import "dotenv/config";
 import { randomBytes } from "node:crypto";
 import { hash } from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@prisma/client";
+import { LimitUnit, PrismaClient, RecordStatus } from "@prisma/client";
 import { generateUniqueAccessCode } from "../lib/access-code";
 
-// BLOQUE 35B — acceso puntual, idempotente, para dejar el tenant YC Telecomunicaciones y sus 3 usuarios de
-// referencia (Gerente/Supervisor/Promotor) operativos en la base de datos que esté configurada en DATABASE_URL
-// en el entorno donde se ejecute este script (nunca hardcoded aquí — así el mismo script sirve para inspección
-// local y, corrido dentro del contenedor real, para producción).
+// BLOQUE 35B/35D — acceso puntual, idempotente, para dejar el tenant YC Telecomunicaciones, sus 3 accesos de
+// referencia (Gerente/Supervisor/Promotor) y el SUPER_ADMIN de plataforma operativos en la base de datos que
+// esté configurada en DATABASE_URL en el entorno donde se ejecute este script (nunca hardcoded aquí — así el
+// mismo script sirve para inspección local y, corrido dentro del contenedor real, para producción).
 //
 // Modo por defecto: SOLO INSPECCIONA, no escribe nada. Pasar --apply para crear lo que falte.
-// Nunca borra, nunca trunca, nunca toca Sale/Customer/Lead/ReconciliationImport/FinanceEntry/etc.
+// Nunca borra, nunca trunca, nunca toca Sale/Customer/Lead/ReconciliationImport/FinanceEntry/PipelineStage/
+// Product/etc. — y nunca toca el tenant "clinica-demo" (fuera de alcance operativo, ver CLAUDE.md).
 //
-// Referencia usada para no inventar nada al crear el tenant desde cero (capturada del tenant YC real ya
-// validado en bloques anteriores): plan "business", plantilla vertical "CRM_TELECOM" con sus features,
-// módulos habilitados, y el set de permisos que cada rol tiene HOY en producción de facto.
+// Todo lo "oficial" (Plan, catálogo de Módulos, catálogo de Permisos, límites, plantilla vertical CRM_TELECOM
+// y el set mínimo de permisos por rol para YC) está copiado literalmente de prisma/seed.ts — la única fuente
+// de verdad del bootstrap de plataforma en este repo. Nada de esto se inventa aquí; si algo que este script
+// necesita no está ni en la base ni en seed.ts, el script se detiene en vez de adivinar.
+
+// --- Catálogo de plataforma (global, no específico de un tenant) — prisma/seed.ts líneas 11-27 ---
+const PLATFORM_MODULES = [
+  ["crm", "CRM", "Clientes, ventas y seguimientos"],
+  ["reportes", "Reportes", "Indicadores y análisis del negocio"],
+  ["guardian", "Guardian", "Observación de infraestructura"],
+  ["call-center", "Call Center", "Campañas, agentes y telefonía"],
+  ["sms-center", "SMS Center", "Campañas y mensajería SMS"],
+  ["whatsapp", "WhatsApp", "Mensajería y chatbot"],
+] as const;
+const PLATFORM_LIMITS = [
+  ["max-users", "Máximo usuarios", LimitUnit.COUNT, 25],
+  ["max-call-center-agents", "Máximo agentes Call Center", LimitUnit.COUNT, 10],
+  ["max-simultaneous-channels", "Máximo canales simultáneos", LimitUnit.COUNT, 20],
+  ["max-campaigns", "Máximo campañas", LimitUnit.COUNT, 15],
+  ["sms-limit", "Límite SMS", LimitUnit.SMS, 5000],
+  ["phone-minutes-limit", "Límite minutos telefónicos", LimitUnit.MINUTES, 10000],
+] as const;
+const PLATFORM_PERMISSIONS = [
+  ["platform.manage", "Administrar plataforma"], ["tenants.read_all", "Ver todas las empresas"],
+  ["tenant.read", "Ver empresa propia"], ["users.read", "Ver usuarios"], ["users.manage", "Administrar usuarios"],
+  ["modules.read", "Consultar módulos"], ["reports.read", "Consultar reportes"], ["guardian.read", "Ver Guardian"],
+  ["operations.basic", "Acceso operativo básico"],
+  ["users.credentials.reset", "Restablecer credenciales de usuarios"],
+] as const;
 const PLAN_CODE = "business";
-const VERTICAL_TEMPLATE_CODE = "CRM_TELECOM";
-const ENABLED_MODULE_CODES = ["whatsapp", "sms-center", "call-center", "reportes", "crm"];
-const MAX_USERS = 25;
-const CRM_FEATURE_CODES = [
-  "sales", "leads", "commercial-plans", "customers", "follow-ups", "commissions", "advanced-dashboard",
-  "products", "reconciliation", "finance", "payroll", "commercial-management", "promoter-space",
-  "commercial-stores", "commercial-goals", "commercial-action-plans",
-];
-const ROLE_PERMISSIONS: Record<string, string[]> = {
-  COMPANY_ADMIN: ["goals.view","goals.manage","action-plans.view","action-plans.create","action-plans.edit","action-plans.assign","action-plans.close","tenant.read","users.read","users.manage","modules.read","reports.read","operation.view","operation.create","operation.edit","operation.export","team.view","team.create","team.edit","team.assign","team.transfer","users.permissions","commissions.view","commissions.manage","reconciliation.view","reconciliation.manage","finance.view","finance.manage","payroll.view","payroll.manage","users.credentials.reset"],
-  SUPERVISOR: ["goals.view","goals.manage","action-plans.view","action-plans.create","action-plans.edit","action-plans.assign","action-plans.close","tenant.read","reports.read","operations.basic","operation.view","operation.create","operation.edit","team.view"],
-  AGENT: ["tenant.read","operations.basic","operation.view","operation.create","operation.edit","goals.view","action-plans.view"],
-};
+const PLAN_NAME = "Business";
+
+// --- Tenant YC Telecomunicaciones (prisma/seed.ts líneas 120-172) ---
 const TENANT_SLUG = "yc-telecomunicaciones";
+const VERTICAL_TEMPLATE_CODE = "CRM_TELECOM";
+const VERTICAL_TEMPLATE_NAME = "CRM Ventas Telecom";
+const VERTICAL_TEMPLATE_DESCRIPTION = "Configuración reutilizable para operaciones comerciales de telecomunicaciones";
+const YC_CRM_FEATURES = [
+  ["leads", "Leads", true], ["customers", "Clientes", true], ["sales", "Ventas", true],
+  ["follow-ups", "Seguimientos", true], ["products", "Productos", true], ["commercial-plans", "Planes Comerciales", true],
+  ["commissions", "Comisiones", false], ["reconciliation", "Conciliación", false], ["finance", "Finanzas", false], ["advanced-dashboard", "Dashboard avanzado", false],
+] as const;
+const YC_ENABLED_MODULE_CODES = ["crm", "reportes"];
+const YC_MAX_USERS_OVERRIDE = 7;
 const ROLE_NAMES: Record<string, string> = { COMPANY_ADMIN: "Administrador de empresa", SUPERVISOR: "Supervisor", AGENT: "Promotor" };
+const ROLE_IDS: Record<string, string> = { COMPANY_ADMIN: "role-yc-company-admin", SUPERVISOR: "role-yc-supervisor", AGENT: "role-yc-agent" };
+// Set mínimo oficial por rol para YC (seed.ts líneas 162-168) — la autorización real de este producto es por
+// código de rol (isCompanyAdmin/isSuperAdmin/role.code), no por esta tabla granular (ver lib/auth.ts), así que
+// un set mínimo no rompe ninguna funcionalidad de Supervisor/Promotor Portal ya entregada.
+const ROLE_PERMISSIONS: Record<string, string[]> = {
+  COMPANY_ADMIN: ["tenant.read", "users.read", "users.manage", "users.credentials.reset", "modules.read"],
+  SUPERVISOR: ["tenant.read", "reports.read"],
+  AGENT: ["tenant.read", "operations.basic"],
+};
 const USERS = [
   { key: "yaki", name: "Yaki Chávez", email: "yaki.chavez@yc-telecomunicaciones.crm", roleCode: "COMPANY_ADMIN" as const },
   { key: "mario", name: "Mario Vivanco", email: "mario.vivanco@yc-telecomunicaciones.crm", roleCode: "SUPERVISOR" as const },
   { key: "dani", name: "Dani Molina", email: "dani.molina@yc-telecomunicaciones.crm", roleCode: "AGENT" as const, supervisorKey: "mario" as const },
 ];
+
+// --- SUPER_ADMIN de plataforma (prisma/seed.ts línea 61) ---
+const SUPER_ADMIN_ROLE_ID = "role-super-admin";
 // Platform-level account (tenantId=null) — never part of the YC tenant. Only used if no SUPER_ADMIN exists at
 // all in this database; if one already exists (any email), it's reused as-is, never duplicated. Overridable via
 // env vars so whoever runs this in the real container isn't stuck with these defaults.
@@ -56,6 +95,28 @@ function redactedHost(url: string | undefined) {
   try { const u = new URL(url); return `${u.hostname}:${u.port || "5432"}${u.pathname}`; } catch { return "(DATABASE_URL no parseable)"; }
 }
 
+// Upserts ONLY the platform-wide catalog rows (Plan, LimitDefinition, PlanLimit, Module, Permission) — global,
+// never tenant-specific, copied verbatim from prisma/seed.ts. Safe to run every time: no demo tenant, no demo
+// user, no commercial data of any kind is touched here.
+async function bootstrapPlatformCatalog(prisma: PrismaClient) {
+  const plan = await prisma.plan.upsert({ where: { code: PLAN_CODE }, update: { name: PLAN_NAME, status: RecordStatus.ACTIVE }, create: { name: PLAN_NAME, code: PLAN_CODE } });
+  for (const [code, name, unit, value] of PLATFORM_LIMITS) {
+    const definition = await prisma.limitDefinition.upsert({ where: { code }, update: { name, unit }, create: { code, name, unit } });
+    await prisma.planLimit.upsert({ where: { planId_limitId: { planId: plan.id, limitId: definition.id } }, update: { value }, create: { planId: plan.id, limitId: definition.id, value } });
+  }
+  const moduleIdByCode = new Map<string, string>();
+  for (const [code, name, description] of PLATFORM_MODULES) {
+    const moduleRecord = await prisma.module.upsert({ where: { code }, update: { name, description }, create: { code, name, description } });
+    moduleIdByCode.set(code, moduleRecord.id);
+  }
+  const permissionIdByCode = new Map<string, string>();
+  for (const [code, name] of PLATFORM_PERMISSIONS) {
+    const permission = await prisma.permission.upsert({ where: { code }, update: { name }, create: { code, name } });
+    permissionIdByCode.set(code, permission.id);
+  }
+  return { plan, moduleIdByCode, permissionIdByCode };
+}
+
 async function main() {
   const apply = process.argv.includes("--apply");
   console.log(`=== setup-yc-production-access — modo ${apply ? "APLICAR (escribe cambios)" : "INSPECCIÓN (solo lectura)"} ===`);
@@ -63,6 +124,8 @@ async function main() {
 
   const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
 
+  const planExists = await prisma.plan.findUnique({ where: { code: PLAN_CODE }, select: { id: true } });
+  console.log(`PLAN_EXISTS = ${planExists ? "YES" : "NO"}`);
   let tenant = await prisma.tenant.findUnique({ where: { slug: TENANT_SLUG } });
   console.log(`TENANT_EXISTS = ${tenant ? "YES" : "NO"}`);
 
@@ -91,23 +154,17 @@ async function main() {
     }
   }
 
+  console.log("\nAsegurando catálogo de plataforma (Plan/Módulos/Permisos/Límites) — copiado literal de prisma/seed.ts.");
+  const { plan, moduleIdByCode, permissionIdByCode } = await bootstrapPlatformCatalog(prisma);
+
   if (!tenant) {
-    console.log("\nTenant no existe — creándolo con la misma arquitectura ya validada (plan, plantilla vertical, módulos, roles).");
-    const [plan, template, modules, permissions] = await Promise.all([
-      prisma.plan.findFirst({ where: { code: PLAN_CODE, status: "ACTIVE" } }),
-      prisma.verticalTemplate.findFirst({ where: { code: VERTICAL_TEMPLATE_CODE, active: true }, include: { features: true } }),
-      prisma.module.findMany({ where: { status: "ACTIVE" } }),
-      prisma.permission.findMany(),
-    ]);
-    if (!plan) throw new Error(`Plan "${PLAN_CODE}" no existe en esta base. No se inventa uno nuevo — deteniendo.`);
-    if (!template) throw new Error(`Plantilla vertical "${VERTICAL_TEMPLATE_CODE}" no existe en esta base. No se inventa una nueva — deteniendo.`);
-    const maxUsersDefinition = await prisma.limitDefinition.findUnique({ where: { code: "max-users" } });
-    if (!maxUsersDefinition) throw new Error(`Definición de límite "max-users" no existe en esta base. Deteniendo.`);
-    const permissionIdByCode = new Map(permissions.map((p) => [p.code, p.id]));
-    const missingModules = ENABLED_MODULE_CODES.filter((code) => !modules.some((m) => m.code === code));
-    if (missingModules.length) console.warn("Aviso: módulos no encontrados en el catálogo, se omiten:", missingModules);
-    const missingFeatures = CRM_FEATURE_CODES.filter((code) => !template.features.some((f) => f.code === code));
-    if (missingFeatures.length) console.warn("Aviso: features CRM no encontradas en la plantilla, se omiten:", missingFeatures);
+    console.log("Tenant no existe — creándolo con la configuración oficial mínima de seed.ts (plan, plantilla vertical, módulos, roles). No se crean clientes/ventas/leads/productos demo.");
+    const template = await prisma.verticalTemplate.upsert({
+      where: { code: VERTICAL_TEMPLATE_CODE },
+      update: { name: VERTICAL_TEMPLATE_NAME, description: VERTICAL_TEMPLATE_DESCRIPTION, active: true },
+      create: { code: VERTICAL_TEMPLATE_CODE, name: VERTICAL_TEMPLATE_NAME, description: VERTICAL_TEMPLATE_DESCRIPTION },
+    });
+    const maxUsersDefinition = await prisma.limitDefinition.findUniqueOrThrow({ where: { code: "max-users" } });
 
     tenant = await prisma.$transaction(async (tx) => {
       const created = await tx.tenant.create({
@@ -116,18 +173,25 @@ async function main() {
           slug: TENANT_SLUG,
           status: "ACTIVE",
           planId: plan.id,
-          branding: { create: { displayName: "YC Telecomunicaciones", primaryColor: "#ff0000", secondaryColor: "#213745", subdomain: TENANT_SLUG } },
-          modules: { create: modules.map((m) => ({ moduleId: m.id, enabled: ENABLED_MODULE_CODES.includes(m.code), activatedAt: ENABLED_MODULE_CODES.includes(m.code) ? new Date() : null })) },
-          limitOverrides: { create: { limitId: maxUsersDefinition.id, value: BigInt(MAX_USERS) } },
+          branding: { create: { displayName: "YC Telecomunicaciones", subdomain: TENANT_SLUG } },
+          modules: { create: [...moduleIdByCode.entries()].map(([code, id]) => ({ moduleId: id, enabled: YC_ENABLED_MODULE_CODES.includes(code), activatedAt: YC_ENABLED_MODULE_CODES.includes(code) ? new Date() : null })) },
+          limitOverrides: { create: { limitId: maxUsersDefinition.id, value: BigInt(YC_MAX_USERS_OVERRIDE) } },
           verticalTemplates: { create: { verticalTemplateId: template.id, active: true } },
-          crmFeatures: { create: template.features.filter((f) => CRM_FEATURE_CODES.includes(f.code)).map((f) => ({ featureId: f.id, active: true })) },
         },
       });
+      for (const [code, name, active] of YC_CRM_FEATURES) {
+        const feature = await tx.verticalTemplateFeature.upsert({
+          where: { verticalTemplateId_code: { verticalTemplateId: template.id, code } },
+          update: { name, defaultActive: active },
+          create: { verticalTemplateId: template.id, code, name, defaultActive: active },
+        });
+        await tx.tenantCrmFeature.create({ data: { tenantId: created.id, featureId: feature.id, active } });
+      }
       for (const roleCode of Object.keys(ROLE_PERMISSIONS)) {
         const permissionCodes = ROLE_PERMISSIONS[roleCode].filter((code) => permissionIdByCode.has(code));
         await tx.role.create({
           data: {
-            code: roleCode, name: ROLE_NAMES[roleCode], tenantId: created.id, isSystem: true,
+            id: ROLE_IDS[roleCode], code: roleCode, name: ROLE_NAMES[roleCode], tenantId: created.id, isSystem: true,
             permissions: { create: permissionCodes.map((code) => ({ permissionId: permissionIdByCode.get(code)! })) },
           },
         });
@@ -136,17 +200,15 @@ async function main() {
     });
     console.log("Tenant creado:", tenant.id);
   } else {
-    console.log("\nTenant ya existe — reutilizando, verificando que los 3 roles existan.");
-    const permissions = await prisma.permission.findMany();
-    const permissionIdByCode = new Map(permissions.map((p) => [p.code, p.id]));
+    console.log("Tenant ya existe — reutilizando, verificando que los 3 roles existan (sin tocar los que ya están).");
     for (const roleCode of Object.keys(ROLE_PERMISSIONS)) {
       const existingRole = await prisma.role.findFirst({ where: { tenantId: tenant.id, code: roleCode } });
       if (existingRole) { console.log(`Rol ${roleCode} ya existe — no se toca.`); continue; }
       const permissionCodes = ROLE_PERMISSIONS[roleCode].filter((code) => permissionIdByCode.has(code));
       await prisma.role.create({
-        data: { code: roleCode, name: ROLE_NAMES[roleCode], tenantId: tenant.id, isSystem: true, permissions: { create: permissionCodes.map((code) => ({ permissionId: permissionIdByCode.get(code)! })) } },
+        data: { id: ROLE_IDS[roleCode], code: roleCode, name: ROLE_NAMES[roleCode], tenantId: tenant.id, isSystem: true, permissions: { create: permissionCodes.map((code) => ({ permissionId: permissionIdByCode.get(code)! })) } },
       });
-      console.log(`Rol ${roleCode} no existía — creado con el set de permisos de referencia.`);
+      console.log(`Rol ${roleCode} no existía — creado con el set de permisos oficial mínimo.`);
     }
   }
 
@@ -194,9 +256,15 @@ async function main() {
   const daniId = userIdByKey.get("dani");
   if (marioId && daniId) await prisma.user.update({ where: { id: daniId }, data: { supervisorId: marioId } });
 
-  // Platform SUPER_ADMIN — never touches the YC tenant or its role table (tenantId=null, global role).
-  const superAdminRole = await prisma.role.findFirst({ where: { code: "SUPER_ADMIN", tenantId: null } });
-  if (!superAdminRole) throw new Error('Rol global "SUPER_ADMIN" (tenantId=null) no existe en esta base. No se inventa — deteniendo.');
+  // Platform SUPER_ADMIN — global role (tenantId=null), nunca toca el tenant YC.
+  const superAdminRole = await prisma.role.upsert({
+    where: { id: SUPER_ADMIN_ROLE_ID },
+    update: {},
+    create: {
+      id: SUPER_ADMIN_ROLE_ID, code: "SUPER_ADMIN", name: "Super Administrador", tenantId: null, isSystem: true,
+      permissions: { create: PLATFORM_PERMISSIONS.map(([code]) => ({ permissionId: permissionIdByCode.get(code)! })) },
+    },
+  });
   const masterPassword = tempPassword();
   const masterPasswordHash = await hash(masterPassword, 12);
   let masterAdmin: { id: string; name: string; email: string; wasNew: boolean };
